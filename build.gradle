@@ -1,0 +1,1 @@
+apply plugin: 'com.android.application'\n\nandroid {\n    compileSdkVersion 30\n\n    defaultConfig {\n        applicationId \
