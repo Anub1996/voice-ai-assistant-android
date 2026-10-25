@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
 using Microsoft.Win32;
 
 namespace WorkSentinel.Agent.Services;

@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using WorkSentinel.Agent.Config;
 
 namespace WorkSentinel.Agent.Services;

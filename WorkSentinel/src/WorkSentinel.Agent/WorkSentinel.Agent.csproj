@@ -5,6 +5,8 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <RootNamespace>WorkSentinel.Agent</RootNamespace>
     <AssemblyName>WorkSentinel.Agent</AssemblyName>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>
 
