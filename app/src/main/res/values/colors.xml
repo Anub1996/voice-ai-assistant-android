@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#1565C0</color>
+    <color name="primary_dark">#0D47A1</color>
+    <color name="primary_light">#42A5F5</color>
+    <color name="accent">#FF6F00</color>
+    <color name="background">#FAFAFA</color>
+    <color name="surface">#FFFFFF</color>
+
+    <color name="severity_low">#4CAF50</color>
+    <color name="severity_medium">#FF9800</color>
+    <color name="severity_high">#F44336</color>
+    <color name="severity_critical">#B71C1C</color>
+
+    <color name="incoming">#4CAF50</color>
+    <color name="outgoing">#2196F3</color>
+</resources>
