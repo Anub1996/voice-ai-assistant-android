@@ -50,9 +50,10 @@ builder.Services.AddSignalR();
 builder.Services.AddCors(opt =>
 {
     opt.AddDefaultPolicy(p => p
-        .AllowAnyOrigin()
+        .SetIsOriginAllowed(_ => true)
         .AllowAnyMethod()
-        .AllowAnyHeader());
+        .AllowAnyHeader()
+        .AllowCredentials());
 });
 
 var app = builder.Build();

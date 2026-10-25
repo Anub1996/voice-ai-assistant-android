@@ -25,11 +25,11 @@ public class AgentApiClient
         {
             var res = await _http.PostAsJsonAsync("/api/agent/register", new
             {
-                computerName = _config.ComputerName,
                 employeeId = _config.EmployeeId,
-                employeeName = _config.EmployeeName,
+                fullName = _config.EmployeeName,
                 email = _config.Email,
-                department = _config.Department
+                department = _config.Department,
+                computerName = _config.ComputerName
             });
             return res.IsSuccessStatusCode;
         }

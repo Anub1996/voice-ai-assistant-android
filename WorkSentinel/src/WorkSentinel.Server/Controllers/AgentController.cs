@@ -59,7 +59,7 @@ public class AgentController : ControllerBase
     [HttpPost("heartbeat")]
     public async Task<IActionResult> Heartbeat([FromBody] AgentHeartbeatRequest req)
     {
-        var emp = await _db.Employees.FirstOrDefaultAsync(e => e.EmployeeId == req.EmployeeId);
+        var emp = await _db.Employees.FirstOrDefaultAsync(e => e.ComputerName == req.ComputerName);
         if (emp == null) return NotFound();
 
         emp.Status = req.Status;
@@ -74,7 +74,7 @@ public class AgentController : ControllerBase
     [HttpPost("data")]
     public async Task<IActionResult> IngestData([FromBody] AgentDataPayload payload)
     {
-        var emp = await _db.Employees.FirstOrDefaultAsync(e => e.EmployeeId == payload.EmployeeId);
+        var emp = await _db.Employees.FirstOrDefaultAsync(e => e.ComputerName == payload.ComputerName);
         if (emp == null) return NotFound();
 
         // Activities
@@ -181,9 +181,9 @@ public class AgentController : ControllerBase
 
     [HttpPost("screenshot")]
     [RequestSizeLimit(10_000_000)]
-    public async Task<IActionResult> UploadScreenshot([FromForm] string employeeId, IFormFile file)
+    public async Task<IActionResult> UploadScreenshot([FromForm] string computerName, IFormFile file)
     {
-        var emp = await _db.Employees.FirstOrDefaultAsync(e => e.EmployeeId == employeeId);
+        var emp = await _db.Employees.FirstOrDefaultAsync(e => e.ComputerName == computerName);
         if (emp == null) return NotFound();
 
         var dir = Path.Combine("screenshots", emp.EmployeeId, DateTime.UtcNow.ToString("yyyy-MM-dd"));

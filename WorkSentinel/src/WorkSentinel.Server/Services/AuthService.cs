@@ -31,7 +31,7 @@ public class AuthService
         var expires = DateTime.UtcNow.AddHours(12);
         var token = GenerateToken(user, expires);
 
-        return new LoginResponse(token, user.Username, user.Role, expires);
+        return new LoginResponse(token, user.Username, user.FullName, user.Role, expires);
     }
 
     private string GenerateToken(AdminUser user, DateTime expires)

@@ -12,15 +12,17 @@ public class ProductivityService
 
     public async Task<string> CategorizeAppAsync(string appName)
     {
-        var cat = await _db.AppCategories
-            .FirstOrDefaultAsync(c => appName.Contains(c.AppNamePattern, StringComparison.OrdinalIgnoreCase));
+        var categories = await _db.AppCategories.ToListAsync();
+        var cat = categories.FirstOrDefault(c =>
+            appName.Contains(c.AppNamePattern, StringComparison.OrdinalIgnoreCase));
         return cat?.Category ?? "neutral";
     }
 
     public async Task<string> CategorizeWebAsync(string domain)
     {
-        var cat = await _db.WebCategories
-            .FirstOrDefaultAsync(c => domain.Contains(c.DomainPattern, StringComparison.OrdinalIgnoreCase));
+        var categories = await _db.WebCategories.ToListAsync();
+        var cat = categories.FirstOrDefault(c =>
+            domain.Contains(c.DomainPattern, StringComparison.OrdinalIgnoreCase));
         return cat?.Category ?? "neutral";
     }
 

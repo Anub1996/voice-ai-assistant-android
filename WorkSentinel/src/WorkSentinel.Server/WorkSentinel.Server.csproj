@@ -4,6 +4,8 @@
     <TargetFramework>net8.0</TargetFramework>
     <RootNamespace>WorkSentinel.Server</RootNamespace>
     <AssemblyName>WorkSentinel.Server</AssemblyName>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
   </PropertyGroup>
 
   <ItemGroup>

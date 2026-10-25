@@ -2,16 +2,16 @@ namespace WorkSentinel.Server.Models;
 
 // Auth
 public record LoginRequest(string Username, string Password);
-public record LoginResponse(string Token, string Username, string Role, DateTime ExpiresAt);
+public record LoginResponse(string Token, string Username, string FullName, string Role, DateTime ExpiresAt);
 
 // Agent registration
 public record AgentRegisterRequest(string EmployeeId, string FullName, string Email, string Department, string ComputerName);
-public record AgentHeartbeatRequest(string EmployeeId, string Status, string ActiveWindow, string ActiveApp);
+public record AgentHeartbeatRequest(string ComputerName, string Status, string ActiveWindow, string ActiveApp);
 
 // Agent data ingestion (batch)
 public record AgentDataPayload
 {
-    public string EmployeeId { get; init; } = "";
+    public string ComputerName { get; init; } = "";
     public List<ActivityBatch> Activities { get; init; } = new();
     public List<AppUsageBatch> AppUsages { get; init; } = new();
     public List<WebVisitBatch> WebVisits { get; init; } = new();
