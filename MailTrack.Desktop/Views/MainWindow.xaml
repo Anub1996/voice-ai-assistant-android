@@ -172,8 +172,8 @@
                                             <StackPanel Orientation="Horizontal">
                                                 <Border Background="{Binding Severity, Converter={StaticResource SeverityBrush}}"
                                                         CornerRadius="4" Padding="8,2">
-                                                    <TextBlock Text="{Binding Severity}" Foreground="White" FontSize="10" FontWeight="Bold"
-                                                               CharacterCasing="Upper"/>
+                                                    <TextBlock Text="{Binding Severity, Converter={StaticResource UpperCase}}"
+                                                               Foreground="White" FontSize="10" FontWeight="Bold"/>
                                                 </Border>
                                                 <TextBlock Text="{Binding Timestamp, Converter={StaticResource TimestampConv}}"
                                                            Foreground="{StaticResource TextSecondaryBrush}" FontSize="11" Margin="8,0,0,0"
@@ -235,7 +235,8 @@
                                                 </Border>
                                                 <Border Background="{Binding Severity, Converter={StaticResource SeverityBrush}}"
                                                         CornerRadius="8" Padding="6,2" Margin="0,0,6,0">
-                                                    <TextBlock Text="{Binding Severity}" FontSize="10" Foreground="White" CharacterCasing="Upper"/>
+                                                    <TextBlock Text="{Binding Severity, Converter={StaticResource UpperCase}}"
+                                                               FontSize="10" Foreground="White"/>
                                                 </Border>
                                                 <Border Background="#E0E0E0" CornerRadius="8" Padding="6,2">
                                                     <TextBlock Text="{Binding Direction}" FontSize="10"/>

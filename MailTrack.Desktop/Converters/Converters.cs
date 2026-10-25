@@ -63,6 +63,14 @@ namespace MailTrack.Desktop.Converters
         public object ConvertBack(object value, Type t, object p, CultureInfo c) => DateTime.MinValue;
     }
 
+    public class UpperCaseConverter : IValueConverter
+    {
+        public object Convert(object value, Type t, object p, CultureInfo c)
+            => value?.ToString()?.ToUpper() ?? "";
+        public object ConvertBack(object value, Type t, object p, CultureInfo c)
+            => value;
+    }
+
     public class FilterToBoolConverter : IValueConverter
     {
         public object Convert(object value, Type t, object parameter, CultureInfo c)

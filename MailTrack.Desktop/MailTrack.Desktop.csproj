@@ -4,8 +4,7 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
-    <ApplicationIcon>Resources\mailtrack.ico</ApplicationIcon>
-    <AssemblyName>MailTrack</AssemblyName>
+    <AssemblyName>MailTrack.Desktop</AssemblyName>
     <RootNamespace>MailTrack.Desktop</RootNamespace>
     <Version>1.0.0</Version>
   </PropertyGroup>

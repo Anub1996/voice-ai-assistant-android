@@ -11,6 +11,7 @@
             <conv:SeverityToBrushConverter x:Key="SeverityBrush"/>
             <conv:DirectionToColorConverter x:Key="DirectionColor"/>
             <conv:TimestampConverter x:Key="TimestampConv"/>
+            <conv:UpperCaseConverter x:Key="UpperCase"/>
             <conv:FilterToBoolConverter x:Key="FilterBool"/>
 
             <!-- Colors -->
