@@ -1,0 +1,2 @@
+-keep class com.voiceai.mailtrack.data.entity.** { *; }
+-keep class com.voiceai.mailtrack.data.dao.** { *; }
