@@ -55,7 +55,25 @@ dim = 512
 [budget]
 # Total RAM/VRAM (MB) that managed runtimes may claim at once.
 # Starting a runtime that would exceed it stops idle runtimes first (LRU).
-memory_mb = 16000
+# 0 = automatic (detected RAM minus an OS reserve, plus GPU VRAM).
+memory_mb = 0
+
+# Built-in model runner: download GGUF models from Hugging Face in the UI and
+# run them with a llama.cpp build llmo fetches itself. All keys optional.
+[engine]
+downloads = true                         # false = air-gapped (no downloads)
+hf_endpoint = "https://huggingface.co"   # or an internal mirror; HF_ENDPOINT overrides
+# hf_token = "hf_..."                    # gated/private repos; HF_TOKEN overrides
+github_api = "https://api.github.com"    # where llama.cpp releases are looked up
+llama_cpp_repo = "ggml-org/llama.cpp"
+llama_cpp_version = "latest"             # pin a tag (e.g. "b6550") for reproducibility
+backend = "auto"                         # auto | cpu | cuda | vulkan | metal
+# llama_server = "/opt/llama.cpp/llama-server"  # use an existing binary instead
+# models_dir = "~/llm-models"
+# ca_bundle = "/etc/ssl/corp-root.pem"   # TLS-inspecting corporate proxy
+ctx = 4096
+idle_timeout_secs = 900
+server_args = ["-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0", "--jinja"]
 
 # An externally managed runtime (you start it yourself).
 [[runtimes]]

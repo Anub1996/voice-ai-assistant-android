@@ -38,12 +38,13 @@ pub struct AppState {
     pub runtimes: Arc<RuntimeManager>,
     pub memory: Arc<MemoryService>,
     pub auth: Arc<Authenticator>,
+    pub models: Arc<crate::models::ModelService>,
     limiter: Arc<Semaphore>,
     draining: Arc<AtomicBool>,
 }
 
 impl AppState {
-    pub fn new(cfg: Config, store: MemoryStore) -> Self {
+    pub fn new(cfg: Config, store: MemoryStore) -> anyhow::Result<Self> {
         let runtimes = Arc::new(RuntimeManager::new(&cfg));
         let embedder = Embedder::from_config(&cfg.memory.embedder, runtimes.clone());
         let memory = Arc::new(MemoryService::new(
@@ -51,14 +52,20 @@ impl AppState {
             embedder,
             cfg.memory.clone(),
         ));
-        Self {
+        let models = Arc::new(crate::models::ModelService::new(
+            cfg.engine.clone(),
+            runtimes.clone(),
+            Arc::new(crate::jobs::Jobs::default()),
+        )?);
+        Ok(Self {
+            models,
             auth: Arc::new(Authenticator::new(&cfg.server)),
             limiter: Arc::new(Semaphore::new(cfg.server.max_concurrent_requests)),
             draining: Arc::new(AtomicBool::new(false)),
             cfg: Arc::new(cfg),
             runtimes,
             memory,
-        }
+        })
     }
 }
 
@@ -86,6 +93,18 @@ pub fn router(state: AppState) -> Router {
         .route("/llmo/plan", post(plan))
         .route("/llmo/plan/presets", get(presets))
         .route("/llmo/whoami", get(whoami))
+        .route("/llmo/engine", get(engine_status))
+        .route("/llmo/engine/install", post(engine_install))
+        .route("/llmo/hub/search", get(hub_search))
+        .route("/llmo/hub/repo", get(hub_repo))
+        .route("/llmo/hub/recommended", get(hub_recommended))
+        .route("/llmo/hub/download", post(hub_download))
+        .route("/llmo/jobs", get(list_jobs))
+        .route("/llmo/jobs/{id}", get(get_job).delete(cancel_job))
+        .route("/llmo/local", get(list_local))
+        .route("/llmo/local/{id}", axum::routing::delete(delete_local))
+        .route("/llmo/local/{id}/run", post(run_local))
+        .route("/llmo/local/{id}/stop", post(stop_local))
         .route("/metrics", get(metrics))
         .layer(middleware::from_fn_with_state(state.clone(), authenticate));
 
@@ -583,6 +602,212 @@ async fn plan(Json(req): Json<crate::planner::PlanRequest>) -> Result<Json<crate
     Ok(Json(p))
 }
 
+// ---------------------------------------------------------------- built-in models
+
+fn remote(e: anyhow::Error) -> Error {
+    Error::Remote(format!("{e:#}"))
+}
+
+async fn engine_status(State(state): State<AppState>) -> Json<Value> {
+    let hw = tokio::task::spawn_blocking(crate::models::hardware)
+        .await
+        .unwrap_or_else(|_| crate::hardware::detect());
+    Json(json!({
+        "engine": state.models.engine.status(&hw),
+        "hardware": hw,
+        "ctx": state.models.cfg.ctx,
+        "models_dir": state.models.local.root,
+    }))
+}
+
+#[derive(Deserialize, Default)]
+struct InstallBody {
+    #[serde(default)]
+    backend: Option<String>,
+}
+
+async fn engine_install(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    body: Option<Json<InstallBody>>,
+) -> Result<Json<crate::jobs::JobView>> {
+    who.require_admin("engine install")?;
+    if !state.models.cfg.downloads {
+        return Err(Error::Forbidden(
+            "downloads are disabled (engine.downloads = false)".into(),
+        ));
+    }
+    let backend = body
+        .and_then(|b| b.0.backend)
+        .unwrap_or_else(|| state.models.cfg.backend.clone());
+    if !["auto", "cpu", "cuda", "vulkan", "metal"].contains(&backend.as_str()) {
+        return Err(Error::BadRequest(
+            "backend must be auto, cpu, cuda, vulkan or metal".into(),
+        ));
+    }
+    audit(&who, "engine_install", &backend);
+    Ok(Json(state.models.install_engine(backend).view()))
+}
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    q: String,
+    limit: Option<usize>,
+}
+
+async fn hub_search(
+    State(state): State<AppState>,
+    Query(q): Query<SearchQuery>,
+) -> Result<Json<Value>> {
+    if q.q.trim().is_empty() || q.q.len() > 200 {
+        return Err(Error::BadRequest("`q` must be 1-200 characters".into()));
+    }
+    let results = state
+        .models
+        .hub
+        .search(q.q.trim(), q.limit.unwrap_or(20))
+        .await
+        .map_err(remote)?;
+    Ok(Json(json!({ "results": results })))
+}
+
+#[derive(Deserialize)]
+struct RepoQuery {
+    id: String,
+}
+
+async fn hub_repo(
+    State(state): State<AppState>,
+    Query(q): Query<RepoQuery>,
+) -> Result<Json<crate::models::RepoView>> {
+    if !crate::hub::valid_repo(&q.id) {
+        return Err(Error::BadRequest("`id` must look like owner/name".into()));
+    }
+    Ok(Json(state.models.repo_view(&q.id).await.map_err(remote)?))
+}
+
+async fn hub_recommended(State(state): State<AppState>) -> Json<Value> {
+    let models = state.models.clone();
+    let list = tokio::task::spawn_blocking(move || models.recommended())
+        .await
+        .unwrap_or_default();
+    Json(json!({ "models": list }))
+}
+
+#[derive(Deserialize)]
+struct DownloadBody {
+    repo: String,
+    #[serde(default)]
+    choice: Option<String>,
+    #[serde(default)]
+    quant: Option<String>,
+    #[serde(default)]
+    run: bool,
+}
+
+async fn hub_download(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Json(b): Json<DownloadBody>,
+) -> Result<Json<crate::jobs::JobView>> {
+    who.require_admin("model download")?;
+    if let Some(c) = &b.choice
+        && !crate::hub::valid_repo_path(c)
+    {
+        return Err(Error::BadRequest("invalid `choice`".into()));
+    }
+    audit(
+        &who,
+        "model_download",
+        &format!("repo={} choice={:?} quant={:?}", b.repo, b.choice, b.quant),
+    );
+    let job = state
+        .models
+        .download(b.repo, b.choice, b.quant, b.run)
+        .map_err(|e| Error::BadRequest(format!("{e:#}")))?;
+    Ok(Json(job.view()))
+}
+
+async fn list_jobs(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({ "jobs": state.models.jobs.list() }))
+}
+
+async fn get_job(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::jobs::JobView>> {
+    state
+        .models
+        .jobs
+        .get(&id)
+        .map(|j| Json(j.view()))
+        .ok_or_else(|| Error::NotFound(format!("job `{id}`")))
+}
+
+async fn cancel_job(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Path(id): Path<String>,
+) -> Result<StatusCode> {
+    who.require_admin("cancel job")?;
+    if state.models.jobs.cancel(&id) {
+        audit(&who, "job_cancel", &id);
+        Ok(StatusCode::ACCEPTED)
+    } else {
+        Err(Error::NotFound(format!("job `{id}`")))
+    }
+}
+
+async fn list_local(State(state): State<AppState>) -> Json<Value> {
+    let models = state.models.clone();
+    let list = tokio::task::spawn_blocking(move || models.list_local())
+        .await
+        .unwrap_or_default();
+    Json(json!({ "models": list, "engine_installed": state.models.engine.installed().is_some() }))
+}
+
+async fn run_local(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::jobs::JobView>> {
+    who.require_admin("start model")?;
+    audit(&who, "model_run", &id);
+    let job = state
+        .models
+        .run(&id)
+        .map_err(|e| Error::NotFound(format!("{e:#}")))?;
+    Ok(Json(job.view()))
+}
+
+async fn stop_local(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Path(id): Path<String>,
+) -> Result<StatusCode> {
+    who.require_admin("stop model")?;
+    audit(&who, "model_stop", &id);
+    if state.models.stop(&id).await {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(Error::NotFound(format!("model `{id}`")))
+    }
+}
+
+async fn delete_local(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Path(id): Path<String>,
+) -> Result<StatusCode> {
+    who.require_admin("delete model")?;
+    audit(&who, "model_delete", &id);
+    if state.models.delete(&id).await? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(Error::NotFound(format!("model `{id}`")))
+    }
+}
+
 async fn whoami(Extension(who): Extension<Principal>) -> Json<Value> {
     let role = if who.is_admin() { "admin" } else { "user" };
     Json(json!({ "name": who.name, "role": role, "namespaces": who.namespaces }))
@@ -677,6 +902,7 @@ pub async fn serve(state: AppState, listener: tokio::net::TcpListener) -> anyhow
         version = env!("CARGO_PKG_VERSION"),
         "llmo listening"
     );
+    state.models.sync_runtimes().await;
     let reaper = state.runtimes.spawn_reaper();
     let runtimes = state.runtimes.clone();
     let draining = state.draining.clone();

@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.3.0
+
+### Built-in model runner: run Hugging Face models with nothing else installed
+- **Models** tab:
+  - Recommended models for this PC
+  - Hugging Face search, with fit and speed shown for every quantization
+  - One-click **Download & run**, live progress, speed, ETA and cancel
+  - My models: start, stop, chat, delete
+- Downloads and installs the official llama.cpp build for the machine (CUDA,
+  Metal, Vulkan or CPU) on first use. It is verified against GitHub's
+  SHA-256, and Windows CUDA builds include their runtime.
+- Model downloads are resumable and retried, and verified against Hugging
+  Face's SHA-256. Split GGUFs are supported, vision projectors are skipped,
+  and free disk space is checked first.
+- Downloaded models become managed runtimes on automatically chosen ports.
+  They appear in `/v1/models`, start on first chat, stop when idle and are
+  evicted LRU-first under memory pressure.
+- GGUF header reader that gives the planner exact layer, KV-cache and
+  mixture-of-experts numbers for any downloaded model.
+- CLI: `llmo model search|info|pull|list|rm`, `llmo engine status|install`.
+- Enterprise settings: Hugging Face mirror (`HF_ENDPOINT`), token, GitHub
+  API mirror, version pinning, a configured binary, extra CA bundle, OS
+  proxy support, `engine.downloads = false` for air-gapped sites. All
+  actions are admin-only and audited.
+
+### Other
+- The memory budget defaults to automatic (detected RAM plus VRAM).
+- Model loading no longer blocks other runtimes from starting or stopping,
+  and a runtime can be stopped while it loads.
+- Truncated downloads are retried instead of failing.
+
+
 ## 0.2.0
 
 ### Usability

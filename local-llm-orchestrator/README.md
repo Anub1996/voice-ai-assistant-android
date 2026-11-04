@@ -44,6 +44,34 @@ your machine:
   in-process with no model download, and emails/API keys/tokens/private keys
   are scrubbed before anything is written to disk.
 
+## Run Hugging Face models with nothing else installed
+
+Open the **Models** tab:
+
+1. Pick a **Recommended for this PC** card, or search Hugging Face and choose
+   a file. Each file shows whether it fits your RAM/VRAM and its estimated
+   speed on your hardware.
+2. Click **Download & run**. llmo downloads the GGUF (resumable, verified
+   against Hugging Face's SHA-256), then on first use downloads the official
+   **llama.cpp** engine build for your machine (CUDA for NVIDIA on Windows,
+   Metal on Apple Silicon, Vulkan or CPU elsewhere, verified against
+   GitHub's SHA-256) and starts it.
+3. Chat. The model appears in the Chat model list and in `/v1/models` for
+   any OpenAI client. It stops when idle and starts again on demand.
+
+No Ollama, no llama.cpp install, no terminal. From the command line:
+
+```sh
+llmo model search qwen3
+llmo model info unsloth/Qwen3-30B-A3B-GGUF     # every quant with fit + speed
+llmo model pull unsloth/Qwen3-30B-A3B-GGUF     # best quant for this PC
+llmo model list
+llmo engine install                            # optional; happens automatically
+```
+
+For gated models (e.g. official Gemma/Llama repos), accept the license on
+huggingface.co and set `HF_TOKEN` or `engine.hf_token`.
+
 ## Web UI
 
 `llmo serve` also serves a UI at **http://127.0.0.1:8765/**: chat with
@@ -218,6 +246,15 @@ llmo memory reindex                             # after changing embedder
 | `GET  /llmo/plan/presets`              | Model presets and quantizations          |
 | `GET  /`                               | Web UI                                   |
 | `GET  /llmo/whoami`                    | Identity and role of the calling key     |
+| `GET  /llmo/engine`                    | Built-in engine status and hardware      |
+| `POST /llmo/engine/install`            | Install llama.cpp `{backend?}` (admin)   |
+| `GET  /llmo/hub/search?q=`             | Search Hugging Face GGUF repos           |
+| `GET  /llmo/hub/repo?id=owner/name`    | Quantizations with fit/speed estimates   |
+| `GET  /llmo/hub/recommended`           | Best model choices for this machine      |
+| `POST /llmo/hub/download`              | `{repo, choice?, quant?, run?}` (admin)  |
+| `GET  /llmo/jobs`, `DELETE /llmo/jobs/{id}` | Download/install progress, cancel   |
+| `GET  /llmo/local`                     | Downloaded models                        |
+| `POST /llmo/local/{id}/run` · `/stop`, `DELETE /llmo/local/{id}` | Manage (admin) |
 | `GET  /metrics`                        | Prometheus metrics                       |
 | `GET  /ready`                          | Readiness (DB reachable, not draining)   |
 | `GET  /health`                         | Liveness (never requires auth)           |

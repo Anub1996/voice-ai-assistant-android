@@ -96,6 +96,45 @@ enum Cmd {
     /// Inspect and manage long-term memory.
     #[command(subcommand)]
     Memory(MemoryCmd),
+    /// Download and manage Hugging Face GGUF models for the built-in engine.
+    #[command(subcommand)]
+    Model(ModelCmd),
+    /// The built-in llama.cpp engine.
+    #[command(subcommand)]
+    Engine(EngineCmd),
+}
+
+#[derive(Subcommand)]
+enum ModelCmd {
+    /// Search Hugging Face for GGUF repositories.
+    Search { query: Vec<String> },
+    /// Show a repository's quantizations with fit/speed for this machine.
+    Info { repo: String },
+    /// Download a model (best quant for this machine unless given).
+    Pull {
+        repo: String,
+        #[arg(long)]
+        quant: Option<String>,
+        /// Exact file (first part for split models).
+        #[arg(long)]
+        file: Option<String>,
+    },
+    /// List downloaded models.
+    List,
+    /// Delete a downloaded model.
+    Rm { id: String },
+}
+
+#[derive(Subcommand)]
+enum EngineCmd {
+    /// Show which llama-server llmo will use.
+    Status,
+    /// Download the llama.cpp build for this machine.
+    Install {
+        /// auto, cpu, cuda, vulkan or metal.
+        #[arg(long, default_value = "auto")]
+        backend: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -184,6 +223,7 @@ fn main() -> std::process::ExitCode {
     // Launched with no arguments (e.g. double-clicked in Explorer/Finder):
     // run the server, open the UI, and keep the window open on errors.
     let double_clicked = std::env::args_os().len() == 1;
+    llmo::net::init_tls();
     let cli = Cli::parse();
     init_logging(&cli.log_format);
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -279,7 +319,10 @@ async fn run(cli: Cli, double_clicked: bool) -> Result<()> {
     }
 
     let store = MemoryStore::open(&cfg.db_path())?;
-    let state = AppState::new(cfg, store);
+    let state = AppState::new(cfg, store)?;
+    if matches!(cmd, Cmd::Chat { .. } | Cmd::Runtimes) {
+        state.models.sync_runtimes().await;
+    }
 
     match cmd {
         Cmd::Init { .. }
@@ -345,6 +388,8 @@ async fn run(cli: Cli, double_clicked: bool) -> Result<()> {
             run_chat(&state, model, system, prompt, opts).await?;
         }
         Cmd::Memory(cmd) => run_memory(&state, cmd).await?,
+        Cmd::Model(cmd) => run_model(&state, cmd).await?,
+        Cmd::Engine(cmd) => run_engine(&state, cmd).await?,
     }
     Ok(())
 }
@@ -620,6 +665,119 @@ async fn chat_via_server(base: &str, body: Value, opts: &MemoryOptions) -> Resul
     let reply = tap.finish();
     out.write_all(&reply.as_bytes()[printed..])?;
     println!();
+    Ok(())
+}
+
+async fn follow_job(
+    state: &AppState,
+    job: std::sync::Arc<llmo::jobs::Job>,
+) -> Result<serde_json::Value> {
+    use llmo::jobs::JobState;
+    let mut err = std::io::stderr();
+    loop {
+        let v = job.view();
+        let pct = if v.total_bytes > 0 {
+            v.done_bytes as f64 * 100.0 / v.total_bytes as f64
+        } else {
+            0.0
+        };
+        let eta = v
+            .eta_secs
+            .map(|s| format!(" · {}m{:02}s left", s / 60, s % 60))
+            .unwrap_or_default();
+        let _ = write!(
+            err,
+            "\r\x1b[2K{} {:5.1}% {:.2}/{:.2} GB · {:.1} MB/s{eta}",
+            v.stage,
+            pct,
+            v.done_bytes as f64 / 1e9,
+            v.total_bytes as f64 / 1e9,
+            v.bytes_per_sec as f64 / 1e6
+        );
+        let _ = err.flush();
+        if v.state != JobState::Running {
+            eprintln!();
+            return match v.state {
+                JobState::Completed => Ok(v.result.unwrap_or_default()),
+                JobState::Cancelled => bail!("cancelled"),
+                _ => bail!("{}", v.error.unwrap_or_default()),
+            };
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+            _ = tokio::signal::ctrl_c() => { state.models.jobs.cancel(&v.id); }
+        }
+    }
+}
+
+async fn run_model(state: &AppState, cmd: ModelCmd) -> Result<()> {
+    let m = &state.models;
+    match cmd {
+        ModelCmd::Search { query } => {
+            for r in m.hub.search(&query.join(" "), 20).await? {
+                println!("{:<60} {:>10} downloads", r.id, r.downloads);
+            }
+        }
+        ModelCmd::Info { repo } => {
+            let v = m.repo_view(&repo).await?;
+            println!("{} (gated: {})\n", v.info.id, v.info.gated);
+            for c in &v.choices {
+                let rec = if v.recommended.as_deref() == Some(c.choice.id.as_str()) {
+                    "  <- recommended"
+                } else {
+                    ""
+                };
+                println!(
+                    "{:<12} {:>7.1} GB  {:<5} ~{:>5.1} tok/s  {}{}",
+                    c.choice.quant.as_deref().unwrap_or("?"),
+                    c.choice.size as f64 / 1e9,
+                    if c.estimate.fits { "fits" } else { "big" },
+                    c.estimate.est_tps,
+                    c.choice.id,
+                    rec
+                );
+            }
+        }
+        ModelCmd::Pull { repo, quant, file } => {
+            let job = std::sync::Arc::clone(m).download(repo, file, quant, false)?;
+            let r = follow_job(state, job).await?;
+            println!("downloaded: {}", r["model"].as_str().unwrap_or("?"));
+        }
+        ModelCmd::List => {
+            for v in m.list_local() {
+                println!(
+                    "{:<40} {:>7.1} GB  ~{:>5.1} tok/s  {}",
+                    v.model.id,
+                    v.model.size as f64 / 1e9,
+                    v.estimate.est_tps,
+                    v.model.repo
+                );
+            }
+        }
+        ModelCmd::Rm { id } => {
+            anyhow::ensure!(m.delete(&id).await?, "no downloaded model `{id}`");
+            println!("deleted {id}");
+        }
+    }
+    Ok(())
+}
+
+async fn run_engine(state: &AppState, cmd: EngineCmd) -> Result<()> {
+    match cmd {
+        EngineCmd::Status => {
+            let st = state.models.engine.status(&llmo::models::hardware());
+            println!("{}", serde_json::to_string_pretty(&st)?);
+        }
+        EngineCmd::Install { backend } => {
+            let job = state.models.install_engine(backend);
+            let r = follow_job(state, job).await?;
+            println!(
+                "installed llama.cpp {} ({})",
+                r["version"].as_str().unwrap_or("?"),
+                r["backend"].as_str().unwrap_or("?")
+            );
+        }
+    }
     Ok(())
 }
 

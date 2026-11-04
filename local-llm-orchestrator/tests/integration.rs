@@ -56,7 +56,7 @@ async fn spawn_mock(reply: &'static str) -> (String, Seen) {
 }
 
 async fn spawn_llmo(cfg: Config) -> (String, AppState) {
-    let state = AppState::new(cfg, MemoryStore::open_in_memory().unwrap());
+    let state = AppState::new(cfg, MemoryStore::open_in_memory().unwrap()).unwrap();
     let app = router(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

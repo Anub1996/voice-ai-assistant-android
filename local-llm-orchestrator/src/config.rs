@@ -23,6 +23,125 @@ pub struct Config {
     pub default_runtime: Option<String>,
     #[serde(default)]
     pub runtimes: Vec<RuntimeConfig>,
+    #[serde(default)]
+    pub engine: EngineConfig,
+}
+
+/// Built-in model runner: llmo downloads llama.cpp and GGUF models itself,
+/// so users don't install Ollama or llama.cpp.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EngineConfig {
+    /// Allow downloading engines and models. Set false for air-gapped
+    /// deployments (pre-provision `llama_server` and model files instead).
+    #[serde(default = "default_true")]
+    pub downloads: bool,
+    /// Hugging Face endpoint or an internal mirror (e.g. Artifactory).
+    /// `HF_ENDPOINT` overrides.
+    #[serde(default = "default_hf_endpoint")]
+    pub hf_endpoint: String,
+    /// Token for gated/private repos. `HF_TOKEN` overrides.
+    #[serde(default)]
+    pub hf_token: Option<String>,
+    /// GitHub API base for llama.cpp releases (or a mirror of it).
+    #[serde(default = "default_github_api")]
+    pub github_api: String,
+    #[serde(default = "default_llama_repo")]
+    pub llama_cpp_repo: String,
+    /// `latest` or a release tag such as `b6550` (pin for reproducibility).
+    #[serde(default = "default_latest")]
+    pub llama_cpp_version: String,
+    /// `auto`, `cpu`, `cuda`, `vulkan` or `metal`.
+    #[serde(default = "default_auto")]
+    pub backend: String,
+    /// Use this existing `llama-server` binary instead of downloading one.
+    #[serde(default)]
+    pub llama_server: Option<String>,
+    /// Where models and the engine are stored (default: data dir).
+    #[serde(default)]
+    pub models_dir: Option<String>,
+    #[serde(default)]
+    pub engine_dir: Option<String>,
+    /// Extra CA certificate (PEM) for TLS-inspecting corporate proxies.
+    #[serde(default)]
+    pub ca_bundle: Option<String>,
+    /// Context length for models run by the built-in engine.
+    #[serde(default = "default_ctx")]
+    pub ctx: u32,
+    /// Extra `llama-server` arguments.
+    #[serde(default = "default_server_args")]
+    pub server_args: Vec<String>,
+    /// Stop a built-in model after this many idle seconds (0 = never).
+    #[serde(default = "default_engine_idle")]
+    pub idle_timeout_secs: u64,
+}
+
+impl Default for EngineConfig {
+    fn default() -> Self {
+        Self {
+            downloads: true,
+            hf_endpoint: default_hf_endpoint(),
+            hf_token: None,
+            github_api: default_github_api(),
+            llama_cpp_repo: default_llama_repo(),
+            llama_cpp_version: default_latest(),
+            backend: default_auto(),
+            llama_server: None,
+            models_dir: None,
+            engine_dir: None,
+            ca_bundle: None,
+            ctx: default_ctx(),
+            server_args: default_server_args(),
+            idle_timeout_secs: default_engine_idle(),
+        }
+    }
+}
+
+fn default_hf_endpoint() -> String {
+    "https://huggingface.co".into()
+}
+fn default_github_api() -> String {
+    "https://api.github.com".into()
+}
+fn default_llama_repo() -> String {
+    "ggml-org/llama.cpp".into()
+}
+fn default_latest() -> String {
+    "latest".into()
+}
+fn default_auto() -> String {
+    "auto".into()
+}
+fn default_ctx() -> u32 {
+    4096
+}
+fn default_server_args() -> Vec<String> {
+    ["-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0", "--jinja"]
+        .map(String::from)
+        .to_vec()
+}
+fn default_engine_idle() -> u64 {
+    900
+}
+
+impl EngineConfig {
+    fn data_root() -> PathBuf {
+        dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("llmo")
+    }
+    pub fn models_path(&self) -> PathBuf {
+        self.models_dir
+            .as_deref()
+            .map(expand_tilde)
+            .unwrap_or_else(|| Self::data_root().join("models"))
+    }
+    pub fn engine_path(&self) -> PathBuf {
+        self.engine_dir
+            .as_deref()
+            .map(expand_tilde)
+            .unwrap_or_else(|| Self::data_root().join("engine"))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,6 +341,7 @@ fn default_hash_dim() -> usize {
 pub struct BudgetConfig {
     /// Total memory (MB) that managed runtime processes may claim at once.
     /// Starting a runtime that would exceed it evicts idle runtimes (LRU).
+    /// 0 = automatic: detected RAM minus an OS reserve, plus dedicated VRAM.
     #[serde(default = "default_budget_mb")]
     pub memory_mb: u64,
 }
@@ -235,7 +355,7 @@ impl Default for BudgetConfig {
 }
 
 fn default_budget_mb() -> u64 {
-    16_000
+    0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -252,6 +372,10 @@ pub struct RuntimeConfig {
     /// If set, the orchestrator launches and stops this runtime itself.
     #[serde(default)]
     pub process: Option<ProcessConfig>,
+    /// Pick a free local port at each start; `{port}` in `process.args`
+    /// is replaced with it and `base_url` is rewritten to use it.
+    #[serde(default)]
+    pub auto_port: bool,
     /// Seconds to wait for the runtime to become healthy after launch.
     #[serde(default = "default_startup_timeout")]
     pub startup_timeout_secs: u64,
@@ -346,7 +470,9 @@ impl Config {
                 "duplicate runtime name `{}`",
                 rt.name
             );
-            if let Some(p) = &rt.process {
+            if let Some(p) = &rt.process
+                && self.budget.memory_mb > 0
+            {
                 anyhow::ensure!(
                     p.memory_mb <= self.budget.memory_mb,
                     "runtime `{}` needs {} MB but the budget is {} MB",
@@ -368,6 +494,11 @@ impl Config {
                 "embedder runtime `{runtime}` is not configured"
             );
         }
+        anyhow::ensure!(
+            ["auto", "cpu", "cuda", "vulkan", "metal"].contains(&self.engine.backend.as_str()),
+            "engine.backend must be auto, cpu, cuda, vulkan or metal"
+        );
+        anyhow::ensure!(self.engine.ctx >= 512, "engine.ctx must be >= 512");
         if let EmbedderConfig::Hash { dim } = &self.memory.embedder {
             anyhow::ensure!(*dim >= 16, "hash embedder dim must be >= 16");
         }
@@ -396,6 +527,12 @@ impl Config {
         }
         if let Ok(v) = std::env::var("LLMO_DB_PATH") {
             self.memory.db_path = v;
+        }
+        if let Ok(v) = std::env::var("HF_ENDPOINT") {
+            self.engine.hf_endpoint = v;
+        }
+        if let Ok(v) = std::env::var("HF_TOKEN") {
+            self.engine.hf_token = Some(v);
         }
         self.validate()
     }

@@ -114,6 +114,18 @@ tr.nofit td { color: var(--muted); }
   overflow: auto; font-family: var(--mono); font-size: 12.5px; margin: 6px 0 0; white-space: pre-wrap; word-break: break-all; }
 .cmd .btn { position: absolute; top: 30px; right: 8px; }
 .explain { font-size: 13px; color: var(--muted); }
+.progress { height: 8px; border-radius: 4px; background: var(--panel-2); overflow: hidden; margin: 8px 0 4px; }
+.progress i { display: block; height: 100%; background: var(--accent); transition: width .4s; }
+.progress.done i { background: var(--ok); }
+.list-row { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 10px 0;
+  border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.list-row:last-child { border-bottom: 0; }
+.list-row .grow { flex: 1 1 260px; min-width: 0; }
+.list-row .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.err { color: var(--bad); font-size: 13px; white-space: pre-wrap; }
+.rec-card { display: flex; flex-direction: column; gap: 8px; }
+.rec-card .btn { align-self: flex-start; margin-top: auto; }
+.section-title { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
 
 @media (max-width: 760px) {
   .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
@@ -130,6 +142,7 @@ tr.nofit td { color: var(--muted); }
     <div class="brand">llmo</div>
     <div class="tag">Local LLM memory &amp; runtimes</div>
     <button data-tab="chat" aria-current="page">Chat</button>
+    <button data-tab="models">Models</button>
     <button data-tab="planner">Run a big model</button>
     <button data-tab="memory">Memory</button>
     <button data-tab="runtimes">Runtimes</button>
@@ -166,6 +179,38 @@ tr.nofit td { color: var(--muted); }
         <textarea id="prompt" rows="1" placeholder="Message… (Enter to send, Shift+Enter for a new line)" aria-label="Message"></textarea>
         <button class="btn" id="send" type="submit">Send</button>
       </form>
+    </section>
+
+    <!-- MODELS -->
+    <section id="models">
+      <h1>Models</h1>
+      <p class="sub">Download models from Hugging Face and run them right here. Nothing else to install: llmo fetches the
+        llama.cpp engine for your hardware automatically.</p>
+      <div class="stack">
+        <div class="card" id="engine-card"><span class="muted">Checking engine…</span></div>
+        <div class="card" id="jobs-card" hidden>
+          <div class="section-title"><strong>Downloads &amp; tasks</strong></div>
+          <div id="jobs-list"></div>
+        </div>
+        <div class="card">
+          <div class="section-title"><strong>My models</strong><span class="muted" id="local-dir"></span></div>
+          <div id="local-list"><span class="muted">Loading…</span></div>
+        </div>
+        <div class="card">
+          <div class="section-title"><strong>Recommended for this PC</strong>
+            <span class="explain">Best quantization that fits your memory, with estimated speed.</span></div>
+          <div class="grid" id="rec-grid"></div>
+        </div>
+        <div class="card">
+          <div class="section-title"><strong>Search Hugging Face</strong></div>
+          <form class="row" id="hub-form">
+            <label style="flex:1 1 280px">Model name or repo<input id="hub-q" placeholder="e.g. qwen3, gemma 3, llama, unsloth/Qwen3-30B-A3B-GGUF" spellcheck="false"></label>
+            <button class="btn" type="submit">Search</button>
+          </form>
+          <div id="hub-results" style="margin-top:10px"></div>
+          <div id="hub-repo" style="margin-top:10px"></div>
+        </div>
+      </div>
     </section>
 
     <!-- PLANNER -->
@@ -316,6 +361,7 @@ function show(tab) {
   if (tab === "memory") loadMemory();
   if (tab === "runtimes") loadRuntimes();
   if (tab === "planner" && !planned) runPlan();
+  if (tab === "models") loadModelsTab();
 }
 tabs.forEach((b) => b.onclick = () => show(b.dataset.tab));
 
@@ -342,11 +388,12 @@ async function loadModels() {
     const groups = {};
     for (const m of data.data) if (!m.id.startsWith(m.owned_by + "/")) (groups[m.owned_by] ||= []).push(m.id);
     for (const [rt, models] of Object.entries(groups)) {
-      const g = el("optgroup", { label: rt });
+      const builtIn = models.length === 1 && models[0] === rt;
+      const g = el("optgroup", { label: builtIn ? "Downloaded · " + rt : rt });
       for (const id of models) g.append(el("option", { value: rt + "/" + id, text: id }));
       sel.append(g);
     }
-    if (!sel.options.length) sel.append(el("option", { value: "", text: "No models configured" }));
+    if (!sel.options.length) sel.append(el("option", { value: "", text: "No models yet: open the Models tab" }));
     if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
   } catch (e) { sel.replaceChildren(el("option", { value: "", text: "Could not load models" })); }
 }
@@ -580,6 +627,11 @@ async function runPlan() {
       copyBlock("1 · Run with llama.cpp", p.command));
     if (p.command_speculative) c.append(copyBlock("Faster: speculative decoding with a small draft model", p.command_speculative));
     c.append(copyBlock("2 · Or let llmo manage it (add to config.toml)", p.llmo_config));
+    if (p.model.hf_repo) {
+      c.prepend(el("div", { class: "row", style: "align-items:center" },
+        el("button", { class: "btn", text: `Download & run ${rec.quant} here`, onclick: (e) => startDownload({ repo: p.model.hf_repo, quant: rec.quant, run: true }, e.target) }),
+        el("span", { class: "explain", text: "No install needed: llmo downloads the model and the llama.cpp engine for you." })));
+    }
     nodes.push(c);
   }
   if (p.alternatives.length) {
@@ -594,6 +646,186 @@ async function runPlan() {
     nodes.push(el("div", { class: "card" }, el("strong", { text: "What runs at your target on this machine" }), el("div", { style: "margin-top:10px" }, list)));
   }
   out.replaceChildren(...nodes);
+}
+
+// ---------- built-in models ----------
+const fmtGB = (b) => b >= 1e9 ? (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + " GB" : Math.max(1, Math.round(b / 1e6)) + " MB";
+const fmtEta = (s) => s == null ? "" : s >= 3600 ? `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m left` : s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s left` : `${s}s left`;
+let modelsTimer = null, lastJobStates = {};
+
+function speedChip(est) {
+  if (!est.fits) return el("span", { class: "chip bad", text: "too big for this PC" });
+  const cls = est.meets_target ? "ok" : est.est_tps >= 5 ? "" : "warn";
+  return el("span", { class: "chip " + cls, title: est.basis === "exact" ? "From the model file's header" : "Estimated from file size and name",
+    text: `~${est.est_tps >= 10 ? est.est_tps.toFixed(0) : est.est_tps.toFixed(1)} tok/s` + (est.gpu_layers ? ` · ${est.gpu_layers} GPU layers` : "") });
+}
+
+async function startDownload(body, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = "Starting…"; }
+  try { await api("/llmo/hub/download", { json: body }); show("models"); }
+  catch (e) { alert(e.message); if (btn) { btn.disabled = false; btn.textContent = "Download"; } }
+  loadJobs();
+}
+
+async function loadEngine() {
+  const card = $("#engine-card");
+  try {
+    const d = await api("/llmo/engine");
+    const e = d.engine, inst = e.installed;
+    const backendSel = el("select", { "aria-label": "Engine backend" },
+      ...["auto", "cpu", "cuda", "vulkan", "metal"].map((b) => el("option", { value: b, text: b === "auto" ? `Auto (${e.recommended_backend})` : b.toUpperCase() })));
+    const install = el("button", { class: "btn " + (inst ? "ghost sm" : "sm"), text: inst ? "Reinstall / update" : "Install now",
+      onclick: async () => { install.disabled = true; try { await api("/llmo/engine/install", { json: { backend: backendSel.value } }); } catch (err) { alert(err.message); } loadJobs(); } });
+    if (!e.downloads_enabled) install.disabled = true;
+    const hw = d.hardware;
+    card.replaceChildren(
+      el("div", { class: "section-title" },
+        el("strong", { text: "Engine" }),
+        inst ? el("span", { class: "chip ok", text: `llama.cpp ${inst.version} · ${inst.backend.toUpperCase()}${inst.source !== "managed" ? " · " + inst.source : ""}` })
+             : el("span", { class: "chip warn", text: "not installed yet" })),
+      el("div", { class: "explain", text: inst
+        ? `Using ${inst.server_path}`
+        : "It downloads automatically (about 15–200 MB, depending on GPU support) the first time you run a model, or install it now. Official build from github.com/ggml-org/llama.cpp, verified by SHA-256." }),
+      el("div", { class: "explain", text: `This PC: ${Math.round(hw.ram_gb)} GB RAM · ${hw.gpu ? hw.gpu.name + " " + hw.gpu.vram_gb + " GB" : "no dedicated GPU"} · models run with ${d.ctx}-token context.` }),
+      e.downloads_enabled ? el("div", { class: "row", style: "margin-top:10px;align-items:center" }, backendSel, install)
+                          : el("div", { class: "explain", text: "Downloads are disabled by the administrator." }));
+  } catch (err) { card.replaceChildren(el("span", { class: "err", text: "Engine status unavailable: " + err.message })); }
+}
+
+async function loadJobs() {
+  let jobs = [];
+  try { jobs = (await api("/llmo/jobs")).jobs; } catch { return false; }
+  const recent = jobs.filter((j) => j.state === "running" || Date.now() / 1000 - j.created_at < 600).slice(0, 8);
+  $("#jobs-card").hidden = !recent.length;
+  const list = $("#jobs-list"); list.replaceChildren();
+  let finishedNow = false;
+  for (const j of recent) {
+    if (lastJobStates[j.id] === "running" && j.state !== "running") finishedNow = true;
+    lastJobStates[j.id] = j.state;
+    const pct = j.total_bytes ? Math.min(100, (j.done_bytes / j.total_bytes) * 100) : (j.state === "completed" ? 100 : 0);
+    const meta = j.state === "running"
+      ? [j.stage, j.total_bytes ? `${fmtGB(j.done_bytes)} of ${fmtGB(j.total_bytes)}` : "", j.bytes_per_sec ? `${(j.bytes_per_sec / 1e6).toFixed(1)} MB/s` : "", fmtEta(j.eta_secs)].filter(Boolean).join(" · ")
+      : j.state;
+    const actions = el("div", { class: "actions" });
+    if (j.state === "running") actions.append(el("button", { class: "btn ghost sm", text: "Cancel", onclick: async () => { await api("/llmo/jobs/" + j.id, { method: "DELETE" }); loadJobs(); } }));
+    const model = j.result && j.result.model;
+    if (j.state === "completed" && model) actions.append(el("button", { class: "btn sm", text: "Chat", onclick: () => chatWith(model) }));
+    list.append(el("div", { class: "list-row" },
+      el("div", { class: "grow" },
+        el("div", {}, el("strong", { text: j.title })),
+        el("div", { class: "progress" + (j.state === "completed" ? " done" : "") }, Object.assign(el("i"), { style: `width:${pct}%` })),
+        el("div", { class: "explain", text: meta }),
+        j.error ? el("div", { class: "err", text: j.error }) : null),
+      actions));
+  }
+  if (finishedNow) { loadLocal(); loadEngine(); loadModels(); }
+  return recent.some((j) => j.state === "running");
+}
+
+function chatWith(id) {
+  store.set("model", id + "/" + id);
+  loadModels().then(() => { $("#model").value = id + "/" + id; show("chat"); $("#prompt").focus(); });
+}
+
+async function loadLocal() {
+  const list = $("#local-list");
+  try {
+    const d = await api("/llmo/local");
+    list.replaceChildren();
+    if (!d.models.length) { list.append(el("div", { class: "muted", text: "No models downloaded yet. Pick a recommended one below, or search Hugging Face." })); return; }
+    for (const m of d.models) {
+      const st = m.status.state, running = st === "running", starting = st === "starting";
+      const actions = el("div", { class: "actions" });
+      if (running || starting) actions.append(el("button", { class: "btn ghost sm", text: "Stop", onclick: async () => { await api(`/llmo/local/${m.id}/stop`, { method: "POST" }); loadLocal(); } }));
+      else actions.append(el("button", { class: "btn ghost sm", text: d.engine_installed ? "Start" : "Start (installs engine)", onclick: async (e) => { e.target.disabled = true; try { await api(`/llmo/local/${m.id}/run`, { method: "POST" }); } catch (err) { alert(err.message); } loadJobs(); } }));
+      actions.append(el("button", { class: "btn sm", text: "Chat", onclick: () => chatWith(m.id) }));
+      actions.append(el("button", { class: "btn danger sm", text: "Delete", onclick: async () => { if (!confirm(`Delete ${m.name} (${fmtGB(m.size)}) from disk?`)) return; await api("/llmo/local/" + m.id, { method: "DELETE" }); loadLocal(); loadModels(); } }));
+      const cls = running ? "ok" : starting ? "warn" : st === "failed" ? "bad" : "";
+      list.append(el("div", { class: "list-row" },
+        el("div", { class: "grow" },
+          el("div", {}, el("strong", { text: m.name }), "  ", el("span", { class: "chip " + cls, text: starting ? "loading…" : st })),
+          el("div", { class: "meta" }, el("span", { class: "chip", text: fmtGB(m.size) }), speedChip(m.estimate),
+            m.info && m.info.expert_count > 1 ? el("span", { class: "chip", text: "mixture of experts" }) : null,
+            el("span", { class: "chip mono", text: m.repo })),
+          m.status.detail ? el("div", { class: "err", text: m.status.detail }) : null),
+        actions));
+    }
+  } catch (err) { list.replaceChildren(el("span", { class: "err", text: err.message })); }
+}
+
+let recLoaded = false;
+async function loadRecommended() {
+  if (recLoaded) return;
+  const grid = $("#rec-grid");
+  try {
+    const d = await api("/llmo/hub/recommended");
+    recLoaded = true;
+    grid.replaceChildren();
+    const sorted = d.models.sort((a, b) => (b.meets_target - a.meets_target) || (b.est_tps - a.est_tps));
+    for (const r of sorted) {
+      grid.append(el("div", { class: "card rec-card" },
+        el("strong", { text: r.name }),
+        el("div", { class: "meta" },
+          el("span", { class: "chip", text: `${r.quant} · ${r.size_gib.toFixed(1)} GB` }),
+          el("span", { class: "chip " + (r.meets_target ? "ok" : r.est_tps >= 5 ? "" : "warn"), text: `~${r.est_tps.toFixed(r.est_tps >= 10 ? 0 : 1)} tok/s` })),
+        el("div", { class: "explain mono", text: r.repo }),
+        el("button", { class: "btn sm", text: "Download & run", onclick: (e) => startDownload({ repo: r.repo, quant: r.quant, run: true }, e.target) })));
+    }
+    if (!sorted.length) grid.append(el("div", { class: "muted", text: "Nothing fits this machine's memory." }));
+  } catch (err) { grid.replaceChildren(el("span", { class: "err", text: err.message })); }
+}
+
+$("#hub-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const q = $("#hub-q").value.trim(); if (!q) return;
+  const out = $("#hub-results"); $("#hub-repo").replaceChildren();
+  if (/^[\w.-]+\/[\w.-]+$/.test(q)) { out.replaceChildren(); return showRepo(q); }
+  out.replaceChildren(el("div", { class: "muted", text: "Searching…" }));
+  try {
+    const d = await api("/llmo/hub/search?q=" + encodeURIComponent(q));
+    out.replaceChildren();
+    if (!d.results.length) out.append(el("div", { class: "muted", text: "No GGUF models found." }));
+    for (const r of d.results) out.append(el("div", { class: "list-row" },
+      el("div", { class: "grow" }, el("strong", { class: "mono", text: r.id }), el("div", { class: "explain", text: `${r.downloads.toLocaleString()} downloads · ${r.likes} likes` })),
+      el("button", { class: "btn ghost sm", text: "Choose file", onclick: () => showRepo(r.id) })));
+  } catch (err) { out.replaceChildren(el("div", { class: "err", text: "Search failed: " + err.message })); }
+};
+
+async function showRepo(id) {
+  const box = $("#hub-repo");
+  box.replaceChildren(el("div", { class: "muted", text: "Loading " + id + "…" }));
+  try {
+    const r = await api("/llmo/hub/repo?id=" + encodeURIComponent(id));
+    const rows = r.choices.map((c) => {
+      const isRec = c.id === r.recommended;
+      const btn = c.downloaded ? el("button", { class: "btn ghost sm", text: "Chat", onclick: () => chatWith(c.local_id) })
+        : el("button", { class: "btn sm" + (isRec ? "" : " ghost"), text: "Download", onclick: (e) => startDownload({ repo: r.id, choice: c.id }, e.target) });
+      return el("div", { class: "list-row" },
+        el("div", { class: "grow" },
+          el("div", {}, el("strong", { text: c.quant || c.id }), isRec ? el("span", { class: "chip ok", style: "margin-left:8px", text: "recommended" }) : null,
+            c.downloaded ? el("span", { class: "chip ok", style: "margin-left:8px", text: "downloaded" }) : null),
+          el("div", { class: "meta" }, el("span", { class: "chip", text: fmtGB(c.size) + (c.files.length > 1 ? ` · ${c.files.length} parts` : "") }), speedChip(c.estimate)),
+          el("div", { class: "explain mono", text: c.id })),
+        btn);
+    });
+    box.replaceChildren(el("div", { class: "card stack", style: "background:var(--panel-2)" },
+      el("div", { class: "section-title" }, el("strong", { class: "mono", text: r.id }),
+        r.gated ? el("span", { class: "chip warn", text: "gated: needs a Hugging Face token" }) : null,
+        r.total_params ? el("span", { class: "chip", text: `${(r.total_params / 1e9).toFixed(1)}B parameters` }) : null),
+      rows.length ? el("div", {}, ...rows) : el("div", { class: "muted", text: "This repository has no GGUF files." })));
+  } catch (err) { box.replaceChildren(el("div", { class: "err", text: err.message })); }
+}
+
+async function loadModelsTab() {
+  clearTimeout(modelsTimer);
+  await Promise.all([loadEngine(), loadLocal(), loadRecommended()]);
+  const tick = async () => {
+    if (!$("#models").classList.contains("active")) return;
+    const busy = await loadJobs();
+    if (busy) loadLocal();
+    modelsTimer = setTimeout(tick, busy ? 1000 : 4000);
+  };
+  tick();
 }
 
 // ---------- boot ----------

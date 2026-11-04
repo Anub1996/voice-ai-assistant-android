@@ -42,6 +42,8 @@ struct ProcState {
 
 pub struct Runtime {
     pub cfg: RuntimeConfig,
+    /// Current base URL (changes per start when `auto_port` is set).
+    base_url: RwLock<String>,
     state: Mutex<ProcState>,
     /// Snapshot of `state.status` readable without awaiting.
     status_snapshot: RwLock<Status>,
@@ -60,6 +62,7 @@ impl Runtime {
             Status::External
         };
         Self {
+            base_url: RwLock::new(cfg.base_url.clone()),
             cfg,
             state: Mutex::new(ProcState {
                 child: None,
@@ -110,7 +113,11 @@ impl Runtime {
     }
 
     fn url(&self, path: &str) -> String {
-        format!("{}{}", self.cfg.base_url.trim_end_matches('/'), path)
+        format!("{}{}", self.base_url().trim_end_matches('/'), path)
+    }
+
+    pub fn base_url(&self) -> String {
+        self.base_url.read().unwrap().clone()
     }
 }
 
@@ -146,7 +153,7 @@ impl Drop for Lease {
 
 pub struct RuntimeManager {
     pub http: reqwest::Client,
-    runtimes: Vec<Arc<Runtime>>,
+    runtimes: std::sync::RwLock<Vec<Arc<Runtime>>>,
     default_runtime: Option<String>,
     budget_mb: u64,
     upstream_timeout: Duration,
@@ -157,6 +164,7 @@ pub struct RuntimeManager {
 
 impl RuntimeManager {
     pub fn new(cfg: &Config) -> Self {
+        crate::net::init_tls();
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             // Per-read limit: a stalled runtime cannot hold a request forever.
@@ -169,26 +177,80 @@ impl RuntimeManager {
             .expect("http client");
         Self {
             http,
-            runtimes: cfg
-                .runtimes
-                .iter()
-                .cloned()
-                .map(|c| Arc::new(Runtime::new(c)))
-                .collect(),
+            runtimes: std::sync::RwLock::new(
+                cfg.runtimes
+                    .iter()
+                    .cloned()
+                    .map(|c| Arc::new(Runtime::new(c)))
+                    .collect(),
+            ),
             default_runtime: cfg.default_runtime.clone(),
-            budget_mb: cfg.budget.memory_mb,
+            budget_mb: if cfg.budget.memory_mb > 0 {
+                cfg.budget.memory_mb
+            } else {
+                auto_budget_mb()
+            },
             upstream_timeout: Duration::from_secs(cfg.server.upstream_timeout_secs.max(1)),
             lifecycle: Mutex::new(()),
             epoch: Instant::now(),
         }
     }
 
-    pub fn runtimes(&self) -> &[Arc<Runtime>] {
-        &self.runtimes
+    /// Snapshot of the registered runtimes.
+    pub fn runtimes(&self) -> Vec<Arc<Runtime>> {
+        self.runtimes.read().unwrap().clone()
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<Runtime>> {
-        self.runtimes.iter().find(|r| r.name() == name).cloned()
+        self.runtimes
+            .read()
+            .unwrap()
+            .iter()
+            .find(|r| r.name() == name)
+            .cloned()
+    }
+
+    pub fn budget_mb(&self) -> u64 {
+        self.budget_mb
+    }
+
+    /// Add a runtime at run time (e.g. a downloaded model), replacing a
+    /// previous one with the same name (stopping it first).
+    pub async fn register(&self, cfg: RuntimeConfig) -> Result<Arc<Runtime>> {
+        if cfg.name.is_empty() || cfg.name.contains('/') {
+            return Err(Error::BadRequest(format!(
+                "invalid runtime name `{}`",
+                cfg.name
+            )));
+        }
+        if let Some(p) = &cfg.process
+            && p.memory_mb > self.budget_mb
+        {
+            return Err(Error::Budget(format!(
+                "`{}` needs ~{:.1} GB but the memory budget is {:.1} GB; raise [budget] memory_mb",
+                cfg.name,
+                p.memory_mb as f64 / 1024.0,
+                self.budget_mb as f64 / 1024.0
+            )));
+        }
+        if let Some(old) = self.get(&cfg.name) {
+            self.stop(&old).await;
+        }
+        let rt = Arc::new(Runtime::new(cfg));
+        let mut list = self.runtimes.write().unwrap();
+        list.retain(|r| r.name() != rt.name());
+        list.push(rt.clone());
+        Ok(rt)
+    }
+
+    /// Stop and remove a runtime.
+    pub async fn unregister(&self, name: &str) -> bool {
+        let Some(rt) = self.get(name) else {
+            return false;
+        };
+        self.stop(&rt).await;
+        self.runtimes.write().unwrap().retain(|r| r.name() != name);
+        true
     }
 
     /// Map a requested model to `(runtime, upstream model name)`.
@@ -201,21 +263,18 @@ impl RuntimeManager {
         {
             return Ok((rt, rest.to_string()));
         }
-        if let Some(rt) = self
-            .runtimes
-            .iter()
-            .find(|r| r.cfg.models.iter().any(|m| m == model))
-        {
+        let all = self.runtimes();
+        if let Some(rt) = all.iter().find(|r| r.cfg.models.iter().any(|m| m == model)) {
             return Ok((rt.clone(), model.to_string()));
         }
-        if let Some(rt) = self.runtimes.iter().find(|r| r.serves(model)) {
+        if let Some(rt) = all.iter().find(|r| r.serves(model)) {
             return Ok((rt.clone(), model.to_string()));
         }
         if let Some(rt) = self.default_runtime.as_deref().and_then(|d| self.get(d)) {
             return Ok((rt, model.to_string()));
         }
-        if self.runtimes.len() == 1 {
-            return Ok((self.runtimes[0].clone(), model.to_string()));
+        if all.len() == 1 {
+            return Ok((all[0].clone(), model.to_string()));
         }
         Err(Error::NoRuntime(model.to_string()))
     }
@@ -238,11 +297,17 @@ impl RuntimeManager {
         let Some(proc_cfg) = rt.cfg.process.clone() else {
             return Ok(());
         };
-        let _guard = self.lifecycle.lock().await;
+        let guard = self.lifecycle.lock().await;
         {
             let mut st = rt.state.lock().await;
             if st.status == Status::Running && child_alive(&mut st.child) {
                 return Ok(());
+            }
+            if st.status == Status::Starting && child_alive(&mut st.child) {
+                // Another request is already starting it: wait for that.
+                drop(st);
+                drop(guard);
+                return self.wait_started(rt).await;
             }
             if st.child.is_some() && !child_alive(&mut st.child) {
                 st.child = None;
@@ -251,8 +316,19 @@ impl RuntimeManager {
 
         self.make_room(rt, proc_cfg.memory_mb).await?;
 
+        let mut args = proc_cfg.args.clone();
+        if rt.cfg.auto_port {
+            let port = free_port().map_err(|e| Error::Startup {
+                runtime: rt.name().into(),
+                reason: format!("no free local port: {e}"),
+            })?;
+            for a in &mut args {
+                *a = a.replace("{port}", &port.to_string());
+            }
+            *rt.base_url.write().unwrap() = format!("http://127.0.0.1:{port}");
+        }
         let mut cmd = Command::new(&proc_cfg.command);
-        cmd.args(&proc_cfg.args)
+        cmd.args(&args)
             .envs(&proc_cfg.env)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -301,6 +377,9 @@ impl RuntimeManager {
             st.child = Some(child);
             rt.set_status(&mut st, Status::Starting);
         }
+        // Loading a large model can take minutes: don't block other runtimes'
+        // starts/stops meanwhile.
+        drop(guard);
 
         let deadline = Instant::now() + Duration::from_secs(rt.cfg.startup_timeout_secs);
         loop {
@@ -312,11 +391,18 @@ impl RuntimeManager {
                     st.child = None;
                     let reason = format!("process exited with {code}{}", self.tail(rt));
                     rt.set_status(&mut st, Status::Failed(reason.clone()));
+                    METRICS.runtime_event(rt.name(), "start_failure");
                     return Err(Error::Startup {
                         runtime: rt.name().into(),
                         reason,
                     });
                 }
+            }
+            if rt.status() != Status::Starting {
+                return Err(Error::Startup {
+                    runtime: rt.name().into(),
+                    reason: "stopped while loading".into(),
+                });
             }
             if self.health(rt).await {
                 let mut st = rt.state.lock().await;
@@ -348,6 +434,30 @@ impl RuntimeManager {
         }
     }
 
+    async fn wait_started(&self, rt: &Arc<Runtime>) -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(rt.cfg.startup_timeout_secs + 5);
+        loop {
+            match rt.status() {
+                Status::Running => return Ok(()),
+                Status::Starting if Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(200)).await
+                }
+                Status::Failed(reason) => {
+                    return Err(Error::Startup {
+                        runtime: rt.name().into(),
+                        reason,
+                    });
+                }
+                other => {
+                    return Err(Error::Startup {
+                        runtime: rt.name().into(),
+                        reason: format!("did not start ({other:?})"),
+                    });
+                }
+            }
+        }
+    }
+
     fn tail(&self, rt: &Runtime) -> String {
         let t = rt.stderr_tail.lock().unwrap();
         if t.is_empty() {
@@ -364,8 +474,8 @@ impl RuntimeManager {
     /// fits in the budget. Caller must hold `lifecycle`.
     async fn make_room(&self, target: &Arc<Runtime>, need_mb: u64) -> Result<()> {
         loop {
-            let running: Vec<&Arc<Runtime>> = self
-                .runtimes
+            let all = self.runtimes();
+            let running: Vec<&Arc<Runtime>> = all
                 .iter()
                 .filter(|r| !Arc::ptr_eq(r, target) && r.is_managed())
                 .filter(|r| matches!(r.status(), Status::Running | Status::Starting))
@@ -415,7 +525,7 @@ impl RuntimeManager {
     }
 
     pub async fn stop_all(&self) {
-        for rt in &self.runtimes {
+        for rt in &self.runtimes() {
             if rt.is_managed() {
                 self.stop(rt).await;
             }
@@ -450,7 +560,7 @@ impl RuntimeManager {
 
     pub async fn info(&self, probe: bool) -> Vec<RuntimeInfo> {
         let mut out = Vec::new();
-        for rt in &self.runtimes {
+        for rt in &self.runtimes() {
             let mut status = rt.status();
             if probe && status == Status::External && !self.health(rt).await {
                 status = Status::Failed("unreachable".into());
@@ -462,7 +572,7 @@ impl RuntimeManager {
                 .then(|| (self.epoch.elapsed().as_millis() as i64 - last).max(0) as u64 / 1000);
             out.push(RuntimeInfo {
                 name: rt.name().into(),
-                base_url: rt.cfg.base_url.clone(),
+                base_url: rt.base_url(),
                 managed: rt.is_managed(),
                 status,
                 models: rt.models(),
@@ -477,7 +587,7 @@ impl RuntimeManager {
     /// Stop managed runtimes idle past their `idle_timeout_secs`.
     pub async fn reap_idle(&self) {
         let now = self.epoch.elapsed().as_millis() as i64;
-        for rt in &self.runtimes {
+        for rt in &self.runtimes() {
             let Some(p) = &rt.cfg.process else { continue };
             if p.idle_timeout_secs == 0 || rt.status() != Status::Running {
                 continue;
@@ -580,6 +690,24 @@ impl RuntimeManager {
         }
         Ok(data.into_iter().map(|(_, e)| e).collect())
     }
+}
+
+/// Budget when none is configured: RAM minus the OS reserve, plus VRAM on
+/// discrete GPUs.
+pub fn auto_budget_mb() -> u64 {
+    let hw = crate::models::hardware();
+    let mut gib = (hw.ram_gb - crate::planner::OS_RESERVE_GIB).max(1.0);
+    if let (Some(g), false) = (&hw.gpu, hw.unified_memory) {
+        gib += g.vram_gb;
+    }
+    (gib * 1024.0) as u64
+}
+
+/// Ask the OS for a free loopback port.
+pub fn free_port() -> std::io::Result<u16> {
+    Ok(std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port())
 }
 
 fn child_alive(child: &mut Option<Child>) -> bool {

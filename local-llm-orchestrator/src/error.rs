@@ -25,6 +25,8 @@ pub enum Error {
     Startup { runtime: String, reason: String },
     #[error("upstream runtime `{runtime}` error: {reason}")]
     Upstream { runtime: String, reason: String },
+    #[error("{0}")]
+    Remote(String),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -40,7 +42,9 @@ impl Error {
             Error::Overloaded => StatusCode::SERVICE_UNAVAILABLE,
             Error::NotFound(_) | Error::NoRuntime(_) => StatusCode::NOT_FOUND,
             Error::Budget(_) => StatusCode::SERVICE_UNAVAILABLE,
-            Error::Startup { .. } | Error::Upstream { .. } => StatusCode::BAD_GATEWAY,
+            Error::Startup { .. } | Error::Upstream { .. } | Error::Remote(_) => {
+                StatusCode::BAD_GATEWAY
+            }
             Error::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -55,6 +59,7 @@ impl Error {
             Error::Budget(_) => "budget_exhausted",
             Error::Startup { .. } => "runtime_startup_error",
             Error::Upstream { .. } => "upstream_error",
+            Error::Remote(_) => "remote_error",
             Error::Internal(_) => "internal_error",
         }
     }

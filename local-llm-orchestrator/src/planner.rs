@@ -358,60 +358,147 @@ pub fn plan(req: &PlanRequest, detected: impl FnOnce() -> Hardware) -> Result<Pl
     })
 }
 
-pub fn evaluate(model: &ModelSpec, hw: &Hardware, ctx: u32, target: f64, q: &Quant) -> QuantOption {
-    let weights = model.total_b * 1e9 * q.bpw / 8.0 / GIB;
-    let active = model.active_b * 1e9 * q.bpw / 8.0 / GIB;
-    // q8_0 KV cache: half of f16.
-    let kv_gib = model.kv_bytes_per_token / 2.0 * ctx as f64 / GIB;
-    let ram_usable = hw.ram_gb - OS_RESERVE_GIB;
+/// Where a model of `weights` GiB (of which `active` GiB is read per token)
+/// goes, whether it fits, and how fast it should run.
+pub struct Placement {
+    pub fits: bool,
+    pub gpu_layers: u32,
+    pub ram_gib: f64,
+    pub vram_gib: f64,
+    pub tps: f64,
+}
 
-    let (fits, gpu_layers, ram_gib, vram_gib, tps) = if hw.unified_memory {
+pub fn place(weights: f64, active: f64, layers: u32, kv_gib: f64, hw: &Hardware) -> Placement {
+    let layers = layers.max(1);
+    let ram_usable = hw.ram_gb - OS_RESERVE_GIB;
+    if hw.unified_memory {
         let gpu_cap = hw
             .gpu
             .as_ref()
             .map(|g| g.vram_gb)
             .unwrap_or(hw.ram_gb * 0.75);
         let need = weights + kv_gib + COMPUTE_GIB;
-        let fits = need <= gpu_cap.min(ram_usable);
         let bw = hw
             .gpu
             .as_ref()
             .map(|g| g.bandwidth_gbs)
             .unwrap_or(hw.cpu_bandwidth_gbs);
-        let tps = EFF_GPU * bw * 1e9 / GIB / active;
-        (fits, model.layers, need, need, tps)
+        return Placement {
+            fits: need <= gpu_cap.min(ram_usable),
+            gpu_layers: layers,
+            ram_gib: need,
+            vram_gib: need,
+            tps: EFF_GPU * bw * 1e9 / GIB / active,
+        };
+    }
+    let vram_usable = hw
+        .gpu
+        .as_ref()
+        .map(|g| (g.vram_gb - VRAM_RESERVE_GIB).max(0.0))
+        .unwrap_or(0.0);
+    let gpu_budget = vram_usable - kv_gib - COMPUTE_GIB;
+    let gpu_layers = if gpu_budget <= 0.0 {
+        0
+    } else if gpu_budget >= weights {
+        layers
     } else {
-        let vram_usable = hw
-            .gpu
-            .as_ref()
-            .map(|g| (g.vram_gb - VRAM_RESERVE_GIB).max(0.0))
-            .unwrap_or(0.0);
-        let gpu_budget = vram_usable - kv_gib - COMPUTE_GIB;
-        let gpu_layers = if gpu_budget <= 0.0 {
-            0
-        } else if gpu_budget >= weights {
-            model.layers
-        } else {
-            ((gpu_budget / weights) * model.layers as f64).floor() as u32
-        };
-        let gpu_frac = gpu_layers as f64 / model.layers as f64;
-        let gpu_w = weights * gpu_frac;
-        let cpu_w = weights - gpu_w;
-        let (ram_gib, vram_gib) = if gpu_layers == 0 {
-            (cpu_w + kv_gib + COMPUTE_GIB, 0.0)
-        } else {
-            (cpu_w + 0.3, gpu_w + kv_gib + COMPUTE_GIB)
-        };
-        let fits = ram_gib <= ram_usable;
-        let cpu_bw = EFF_CPU * hw.cpu_bandwidth_gbs * 1e9 / GIB;
-        let gpu_bw = hw
-            .gpu
-            .as_ref()
-            .map(|g| EFF_GPU * g.bandwidth_gbs * 1e9 / GIB)
-            .unwrap_or(1.0);
-        let secs = active * gpu_frac / gpu_bw + active * (1.0 - gpu_frac) / cpu_bw;
-        (fits, gpu_layers, ram_gib, vram_gib, 1.0 / secs)
+        ((gpu_budget / weights) * layers as f64).floor() as u32
     };
+    let gpu_frac = gpu_layers as f64 / layers as f64;
+    let gpu_w = weights * gpu_frac;
+    let cpu_w = weights - gpu_w;
+    let (ram_gib, vram_gib) = if gpu_layers == 0 {
+        (cpu_w + kv_gib + COMPUTE_GIB, 0.0)
+    } else {
+        (cpu_w + 0.3, gpu_w + kv_gib + COMPUTE_GIB)
+    };
+    let cpu_bw = EFF_CPU * hw.cpu_bandwidth_gbs * 1e9 / GIB;
+    let gpu_bw = hw
+        .gpu
+        .as_ref()
+        .map(|g| EFF_GPU * g.bandwidth_gbs * 1e9 / GIB)
+        .unwrap_or(1.0);
+    let secs = active * gpu_frac / gpu_bw + active * (1.0 - gpu_frac) / cpu_bw;
+    Placement {
+        fits: ram_gib <= ram_usable,
+        gpu_layers,
+        ram_gib,
+        vram_gib,
+        tps: 1.0 / secs,
+    }
+}
+
+/// Estimate for a concrete GGUF file.
+#[derive(Debug, Clone, Serialize)]
+pub struct FileEstimate {
+    pub fits: bool,
+    pub gpu_layers: u32,
+    pub layers: u32,
+    pub ram_gib: f64,
+    pub vram_gib: f64,
+    pub kv_gib: f64,
+    pub est_tps: f64,
+    pub meets_target: bool,
+    /// `exact` (from the file's header) or `approximate` (from its name/size).
+    pub basis: &'static str,
+}
+
+/// Unknown geometry: assume ~0.035 GiB of q8 KV cache per billion
+/// parameters per 4k tokens (conservative for dense models).
+const KV_GIB_PER_B_4K: f64 = 0.035;
+
+#[allow(clippy::too_many_arguments)]
+pub fn estimate_file(
+    size_bytes: u64,
+    active_fraction: f64,
+    layers: Option<u32>,
+    kv_bytes_per_token: Option<f64>,
+    params_b: Option<f64>,
+    hw: &Hardware,
+    ctx: u32,
+    target: f64,
+) -> FileEstimate {
+    let weights = size_bytes as f64 / GIB;
+    let active = weights * active_fraction.clamp(0.01, 1.0);
+    let exact = layers.is_some() && kv_bytes_per_token.is_some();
+    let kv_gib = match kv_bytes_per_token {
+        Some(b) => b / 2.0 * ctx as f64 / GIB,
+        None => {
+            params_b.unwrap_or(weights * 2.0)
+                * active_fraction.max(0.25)
+                * KV_GIB_PER_B_4K
+                * ctx as f64
+                / 4096.0
+        }
+    };
+    let layers = layers.unwrap_or(48);
+    let p = place(weights, active, layers, kv_gib, hw);
+    let est_tps = round1(p.tps);
+    FileEstimate {
+        fits: p.fits,
+        gpu_layers: p.gpu_layers,
+        layers,
+        ram_gib: round1(p.ram_gib),
+        vram_gib: round1(p.vram_gib),
+        kv_gib: round2(kv_gib),
+        est_tps,
+        meets_target: p.fits && est_tps >= target,
+        basis: if exact { "exact" } else { "approximate" },
+    }
+}
+
+pub fn evaluate(model: &ModelSpec, hw: &Hardware, ctx: u32, target: f64, q: &Quant) -> QuantOption {
+    let weights = model.total_b * 1e9 * q.bpw / 8.0 / GIB;
+    let active = model.active_b * 1e9 * q.bpw / 8.0 / GIB;
+    // q8_0 KV cache: half of f16.
+    let kv_gib = model.kv_bytes_per_token / 2.0 * ctx as f64 / GIB;
+    let Placement {
+        fits,
+        gpu_layers,
+        ram_gib,
+        vram_gib,
+        tps,
+    } = place(weights, active, model.layers, kv_gib, hw);
 
     let est_tps = round1(tps);
     let est_tps_draft = model

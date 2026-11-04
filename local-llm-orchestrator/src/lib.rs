@@ -9,10 +9,16 @@
 pub mod auth;
 pub mod chat;
 pub mod config;
+pub mod engine;
 pub mod error;
+pub mod gguf;
 pub mod hardware;
+pub mod hub;
+pub mod jobs;
 pub mod memory;
 pub mod metrics;
+pub mod models;
+pub mod net;
 pub mod planner;
 pub mod runtime;
 pub mod server;

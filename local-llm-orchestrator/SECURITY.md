@@ -34,6 +34,21 @@ shared:
 - **Resource limits**: request body limit, concurrency limit with load
   shedding, and upstream timeouts.
 
+## Supply chain (built-in model runner)
+
+- The engine comes only from the configured llama.cpp GitHub repository
+  (`ggml-org/llama.cpp` by default) and is verified against the SHA-256
+  digest GitHub publishes for each release asset. Pin `llama_cpp_version`
+  for reproducible deployments, or provide your own vetted binary with
+  `engine.llama_server`.
+- Model files are verified against Hugging Face's published SHA-256. GGUF
+  headers are parsed defensively, with bounded allocations and no panics on
+  malformed input.
+- Downloads, installs and process launches need an admin key and are
+  audited. `engine.downloads = false` turns all of it off.
+- Model weights from third parties can be biased or wrong. Treat their
+  output as untrusted.
+
 ## Out of scope / your responsibility
 
 - **TLS**: terminate it at a reverse proxy when exposing llmo beyond

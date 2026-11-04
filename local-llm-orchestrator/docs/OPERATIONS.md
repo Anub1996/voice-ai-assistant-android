@@ -132,6 +132,47 @@ configured.
   namespace. Encryption at rest is delegated to the disk (BitLocker,
   FileVault, LUKS).
 
+## Built-in model runner
+
+llmo can download GGUF models from Hugging Face and run them with a
+llama.cpp build it installs itself (the **Models** tab, `/llmo/hub/*`,
+`llmo model …`).
+
+- **Who can use it**: downloading, installing the engine, starting,
+  stopping and deleting models need an **admin** key. Searching and listing
+  are open to any key. Every action is audited (`model_download`,
+  `engine_install`, `model_run`, `model_delete`, …). Chatting with a
+  downloaded model starts it on demand for any user allowed to chat.
+- **Integrity**: model files are checked against the SHA-256 that Hugging
+  Face publishes for LFS objects. Engine archives are checked against the
+  digest GitHub publishes for release assets. A mismatch deletes the partial
+  file and fails the job. Downloads resume after interruptions (HTTP Range)
+  and retry with backoff. Free disk space is checked first. Unsafe paths in
+  repositories or archives are rejected.
+- **Choosing the engine build**: llmo picks one automatically (NVIDIA on
+  Windows → CUDA 12 build plus its runtime; Apple Silicon → Metal; otherwise
+  CPU, or Vulkan on Linux with NVIDIA). Override with `engine.backend`, pin
+  the version with `engine.llama_cpp_version`, or point
+  `engine.llama_server` at a binary you provide.
+- **Corporate networks**: downloads honour the OS proxy settings and
+  `HTTPS_PROXY`/`NO_PROXY`, and trust the OS certificate store. Add
+  `engine.ca_bundle` for a TLS-inspecting proxy's root CA.
+- **Mirrors and air-gapped sites**: set `engine.hf_endpoint` to an internal
+  Hugging Face mirror (e.g. an Artifactory "huggingface" remote) and
+  `engine.github_api` to a mirror of the GitHub releases API. To allow no
+  downloads at all, set `engine.downloads = false`, set
+  `engine.llama_server`, and place model files plus a manifest under
+  `models_dir` (or run `llmo model pull` on a connected machine and copy the
+  `models` directory across).
+- **Storage**: `<data dir>/llmo/models/<owner>__<repo>/` (files) and
+  `models/manifests/*.json` (registry), `<data dir>/llmo/engine/<tag>-<backend>/`.
+  Change them with `engine.models_dir` and `engine.engine_dir`.
+- **Resources**: each model's memory claim (weights, KV cache and buffers)
+  counts against `[budget] memory_mb`. The default `0` means automatic:
+  detected RAM minus an OS reserve, plus GPU VRAM. Idle models stop after
+  `engine.idle_timeout_secs`, and under memory pressure the least recently
+  used idle model is stopped first.
+
 ## Upgrades
 
 1. `llmo memory backup <file>`
