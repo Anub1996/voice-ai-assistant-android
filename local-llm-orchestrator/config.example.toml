@@ -1,0 +1,55 @@
+# llmo — Local LLM Memory & Runtime Orchestrator
+# Copy to ~/.config/llmo/config.toml (or run `llmo init`).
+
+# Runtime used when a requested model is not matched to any runtime.
+default_runtime = "ollama"
+
+[server]
+# Loopback only by default. Nothing leaves this machine.
+bind = "127.0.0.1:8765"
+# Optional bearer token required on every request:
+# api_key = "change-me"
+
+[memory]
+# db_path = "~/.local/share/llmo/memory.db"
+top_k = 5
+min_score = 0.25
+max_context_chars = 4000
+recency_half_life_days = 30
+# Scrub emails, API keys, tokens and similar secrets before storing.
+redact = true
+
+# Built-in, offline, model-free embedder (default):
+[memory.embedder]
+kind = "hash"
+dim = 512
+
+# Or use a real embedding model served by one of your runtimes:
+# [memory.embedder]
+# kind = "runtime"
+# runtime = "ollama"
+# model = "nomic-embed-text"
+
+[budget]
+# Total RAM/VRAM (MB) that managed runtimes may claim at once.
+# Starting a runtime that would exceed it stops idle runtimes first (LRU).
+memory_mb = 16000
+
+# An externally managed runtime (you start it yourself).
+[[runtimes]]
+name = "ollama"
+base_url = "http://127.0.0.1:11434"
+models = ["llama3.2:3b", "nomic-embed-text"]
+
+# A runtime the orchestrator launches on demand and stops when idle.
+[[runtimes]]
+name = "qwen"
+base_url = "http://127.0.0.1:8081"
+models = ["qwen2.5-7b-instruct"]
+startup_timeout_secs = 120
+
+[runtimes.process]
+command = "llama-server"
+args = ["-m", "/models/qwen2.5-7b-instruct-q4_k_m.gguf", "--port", "8081", "-c", "8192"]
+memory_mb = 6000
+idle_timeout_secs = 600
