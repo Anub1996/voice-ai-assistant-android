@@ -226,7 +226,11 @@ async fn streaming_is_forwarded_and_captured() {
 #[tokio::test]
 async fn api_key_is_enforced_but_health_is_open() {
     let (mock, _) = spawn_mock("hi there, friend!").await;
-    let (llmo, _) = spawn_llmo(config(&mock, "[server]\napi_key = \"s3cret\"")).await;
+    let (llmo, _) = spawn_llmo(config(
+        &mock,
+        "[server]\napi_key = \"s3cret-0123456789abcdef\"",
+    ))
+    .await;
     let http = reqwest::Client::new();
     assert_eq!(
         http.get(format!("{llmo}/health"))
@@ -246,7 +250,7 @@ async fn api_key_is_enforced_but_health_is_open() {
     );
     let r = http
         .get(format!("{llmo}/v1/models"))
-        .bearer_auth("s3cret")
+        .bearer_auth("s3cret-0123456789abcdef")
         .send()
         .await
         .unwrap();
@@ -398,8 +402,8 @@ async fn managed_runtimes_start_on_demand_and_evict_lru() {
             models = ["{name}-model"]
             startup_timeout_secs = 20
             [runtimes.process]
-            command = "{py}"
-            args = ["{script}", "{port}"]
+            command = '{py}'
+            args = ['{script}', '{port}']
             memory_mb = 600
             "#,
             script = script.display()
@@ -449,4 +453,271 @@ async fn managed_runtimes_start_on_demand_and_evict_lru() {
 
     state.runtimes.stop_all().await;
     assert_eq!(a.status(), Status::Stopped);
+}
+
+// ------------------------------------------------- production hardening
+
+const ADMIN: &str = "admin-key-0123456789abcdef";
+const ALICE: &str = "alice-key-0123456789abcdef";
+
+fn rbac_config(mock: &str) -> Config {
+    config(
+        mock,
+        &format!(
+            r#"
+            [[server.keys]]
+            name = "ops"
+            role = "admin"
+            key = "{ADMIN}"
+            [[server.keys]]
+            name = "alice"
+            role = "user"
+            key = "{ALICE}"
+            namespaces = ["alice", "team-*"]
+            "#
+        ),
+    )
+}
+
+#[tokio::test]
+async fn rbac_scopes_namespaces_and_admin_actions() {
+    let (mock, _) = spawn_mock("a reply that is long enough to store").await;
+    let (llmo, _) = spawn_llmo(rbac_config(&mock)).await;
+    let http = reqwest::Client::new();
+    let add = |key: &'static str, ns: &'static str| {
+        http.post(format!("{llmo}/llmo/memory"))
+            .bearer_auth(key)
+            .json(&json!({ "namespace": ns, "content": format!("secret fact for {ns}") }))
+            .send()
+    };
+    assert_eq!(add(ALICE, "alice").await.unwrap().status(), 201);
+    assert_eq!(add(ALICE, "team-red").await.unwrap().status(), 201);
+    assert_eq!(add(ALICE, "bob").await.unwrap().status(), 403);
+    let bob = add(ADMIN, "bob").await.unwrap();
+    assert_eq!(bob.status(), 201);
+    let bob_id = bob.json::<Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Alice cannot read or delete Bob's memory, and cannot tell it exists.
+    let r = http
+        .get(format!("{llmo}/llmo/memory/{bob_id}"))
+        .bearer_auth(ALICE)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+    let r = http
+        .delete(format!("{llmo}/llmo/memory/{bob_id}"))
+        .bearer_auth(ALICE)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+    // Listing needs a namespace for user keys; stats only show her namespaces.
+    let r = http
+        .get(format!("{llmo}/llmo/memory"))
+        .bearer_auth(ALICE)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+    let s: Value = http
+        .get(format!("{llmo}/llmo/memory/stats"))
+        .bearer_auth(ALICE)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let names: Vec<&str> = s["namespaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["namespace"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["alice", "team-red"]);
+    // Chat into a foreign namespace is refused; own namespace works.
+    let chat = |ns: &'static str| {
+        http.post(format!("{llmo}/v1/chat/completions"))
+            .bearer_auth(ALICE)
+            .header("x-llmo-namespace", ns)
+            .json(&json!({ "model": "tiny", "messages": [{ "role": "user", "content": "hello there" }] }))
+            .send()
+    };
+    assert_eq!(chat("bob").await.unwrap().status(), 403);
+    assert_eq!(chat("alice").await.unwrap().status(), 200);
+    // Admin-only actions.
+    let r = http
+        .post(format!("{llmo}/llmo/memory/reindex"))
+        .bearer_auth(ALICE)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+    let r = http
+        .delete(format!("{llmo}/llmo/memory?all=true"))
+        .bearer_auth(ALICE)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+    let r = http
+        .post(format!("{llmo}/llmo/memory/reindex"))
+        .bearer_auth(ADMIN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    // whoami
+    let w: Value = http
+        .get(format!("{llmo}/llmo/whoami"))
+        .bearer_auth(ALICE)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(w["role"], "user");
+    // Bad key.
+    let r = http
+        .get(format!("{llmo}/llmo/whoami"))
+        .bearer_auth("nope-nope-nope-nope")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+    assert_eq!(r.headers()["www-authenticate"], "Bearer");
+}
+
+/// Mock runtime that waits before answering.
+async fn spawn_slow_mock(delay_ms: u64) -> String {
+    let app = Router::new()
+        .route("/v1/models", get(|| async { Json(json!({ "data": [] })) }))
+        .route(
+            "/v1/chat/completions",
+            post(move || async move {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                Json(json!({ "choices": [{ "message": { "role": "assistant", "content": "slow" } }] }))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn sheds_load_when_at_capacity() {
+    let mock = spawn_slow_mock(600).await;
+    let (llmo, _) = spawn_llmo(config(&mock, "[server]\nmax_concurrent_requests = 1")).await;
+    let http = reqwest::Client::new();
+    let send = || {
+        http.post(format!("{llmo}/v1/chat/completions"))
+            .header("x-llmo-memory", "off")
+            .json(&json!({ "model": "tiny", "messages": [{ "role": "user", "content": "hi" }] }))
+            .send()
+    };
+    let first = tokio::spawn(send());
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let second = send().await.unwrap();
+    assert_eq!(second.status(), 503);
+    assert_eq!(second.headers()["retry-after"], "1");
+    assert_eq!(first.await.unwrap().unwrap().status(), 200);
+    // Capacity is released afterwards.
+    assert_eq!(send().await.unwrap().status(), 200);
+}
+
+#[tokio::test]
+async fn upstream_timeout_is_enforced() {
+    let mock = spawn_slow_mock(3_000).await;
+    let (llmo, _) = spawn_llmo(config(&mock, "[server]\nupstream_timeout_secs = 1")).await;
+    let started = std::time::Instant::now();
+    let r = reqwest::Client::new()
+        .post(format!("{llmo}/v1/chat/completions"))
+        .header("x-llmo-memory", "off")
+        .json(&json!({ "model": "tiny", "messages": [{ "role": "user", "content": "hi" }] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 502);
+    assert!(started.elapsed() < Duration::from_millis(2_500));
+    let v: Value = r.json().await.unwrap();
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("timed out"),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn observability_endpoints() {
+    let (mock, _) = spawn_mock("ok then, that is fine").await;
+    let (llmo, _) = spawn_llmo(config(&mock, "")).await;
+    let http = reqwest::Client::new();
+    // Request ids are echoed or generated.
+    let r = http
+        .get(format!("{llmo}/health"))
+        .header("x-request-id", "trace-42")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.headers()["x-request-id"], "trace-42");
+    assert_eq!(r.headers()["x-content-type-options"], "nosniff");
+    let r = http.get(format!("{llmo}/health")).send().await.unwrap();
+    assert_eq!(r.headers()["x-request-id"].len(), 32);
+
+    let ready: Value = http
+        .get(format!("{llmo}/ready"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(ready["status"], "ready");
+    assert_eq!(ready["schema_version"], 1);
+
+    http.post(format!("{llmo}/v1/chat/completions"))
+        .json(&json!({ "model": "tiny", "messages": [{ "role": "user", "content": "count me in the metrics" }] }))
+        .send()
+        .await
+        .unwrap();
+    let m = http.get(format!("{llmo}/metrics")).send().await.unwrap();
+    assert!(
+        m.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/plain")
+    );
+    let text = m.text().await.unwrap();
+    assert!(
+        text.contains("route=\"/v1/chat/completions\",status=\"200\""),
+        "{text}"
+    );
+    assert!(text.contains("llmo_runtime_up{runtime=\"mock\",managed=\"false\"} 1"));
+    assert!(text.contains("llmo_http_request_duration_seconds_bucket"));
+
+    // The UI ships a strict CSP.
+    let ui = http.get(format!("{llmo}/")).send().await.unwrap();
+    assert!(
+        ui.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .contains("connect-src 'self'")
+    );
+}
+
+#[tokio::test]
+async fn internal_errors_do_not_leak_details() {
+    let e = llmo::error::Error::Internal(anyhow::anyhow!("/secret/path/memory.db: disk I/O error"));
+    let r = axum::response::IntoResponse::into_response(e);
+    assert_eq!(r.status(), 500);
+    let body = axum::body::to_bytes(r.into_body(), 10_000).await.unwrap();
+    assert!(!String::from_utf8_lossy(&body).contains("secret"));
 }

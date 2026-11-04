@@ -6,9 +6,29 @@ default_runtime = "ollama"
 
 [server]
 # Loopback only by default. Nothing leaves this machine.
+# Binding beyond loopback (e.g. 0.0.0.0) requires an API key.
 bind = "127.0.0.1:8765"
-# Optional bearer token required on every request:
-# api_key = "change-me"
+max_concurrent_requests = 64     # extra /v1 requests get 503 + Retry-After
+upstream_timeout_secs = 600      # total limit for non-streaming generations
+stream_idle_timeout_secs = 120   # max silence between streamed chunks
+max_body_mb = 32
+
+# Simplest auth: one admin key (min 16 chars). Or set LLMO_API_KEY.
+# api_key = "change-me-to-a-long-random-string"
+
+# Team setups: named keys with roles and namespace scopes.
+# Create with `llmo key new --name alice --namespace alice --namespace 'team-*'`
+# (only the SHA-256 is stored here).
+# [[server.keys]]
+# name = "ops"
+# role = "admin"
+# key_sha256 = "<64 hex chars>"
+#
+# [[server.keys]]
+# name = "alice"
+# role = "user"                  # chat + memory in her namespaces only
+# key_sha256 = "<64 hex chars>"
+# namespaces = ["alice", "team-*"]
 
 [memory]
 # db_path = "~/.local/share/llmo/memory.db"

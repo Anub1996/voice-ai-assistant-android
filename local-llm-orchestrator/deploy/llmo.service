@@ -1,0 +1,45 @@
+# systemd unit for llmo. Install:
+#   sudo useradd --system --home /var/lib/llmo llmo
+#   sudo install -m 0755 llmo /usr/local/bin/llmo
+#   sudo install -D -m 0640 -o root -g llmo config.toml /etc/llmo/config.toml
+#   sudo cp llmo.service /etc/systemd/system/ && sudo systemctl enable --now llmo
+[Unit]
+Description=llmo - Local LLM Memory & Runtime Orchestrator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=llmo
+Group=llmo
+ExecStart=/usr/local/bin/llmo --config /etc/llmo/config.toml serve
+Environment=LLMO_LOG_FORMAT=json
+Environment=LLMO_DB_PATH=/var/lib/llmo/memory.db
+StateDirectory=llmo
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=40
+KillSignal=SIGTERM
+LimitNOFILE=65536
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=false
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/var/lib/llmo
+
+[Install]
+WantedBy=multi-user.target

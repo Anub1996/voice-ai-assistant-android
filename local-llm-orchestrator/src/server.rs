@@ -1,9 +1,14 @@
 //! HTTP API: an OpenAI-compatible surface plus `/llmo/*` management routes.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
-use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
+use axum::extract::{
+    ConnectInfo, DefaultBodyLimit, Extension, MatchedPath, Path, Query, Request, State,
+};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -12,20 +17,29 @@ use axum::{Json, Router};
 use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::sync::Semaphore;
+use tracing::Instrument;
 
+use crate::auth::{Authenticator, Principal, audit};
 use crate::chat::{self, H_INJECTED, H_RUNTIME, MemoryOptions, SseTap};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::memory::{
     self, Embedder, MemoryService, MemoryStore, NewMemory, store::default_namespace,
 };
+use crate::metrics::METRICS;
 use crate::runtime::RuntimeManager;
+
+pub const H_REQUEST_ID: &str = "x-request-id";
 
 #[derive(Clone)]
 pub struct AppState {
     pub cfg: Arc<Config>,
     pub runtimes: Arc<RuntimeManager>,
     pub memory: Arc<MemoryService>,
+    pub auth: Arc<Authenticator>,
+    limiter: Arc<Semaphore>,
+    draining: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -38,6 +52,9 @@ impl AppState {
             cfg.memory.clone(),
         ));
         Self {
+            auth: Arc::new(Authenticator::new(&cfg.server)),
+            limiter: Arc::new(Semaphore::new(cfg.server.max_concurrent_requests)),
+            draining: Arc::new(AtomicBool::new(false)),
             cfg: Arc::new(cfg),
             runtimes,
             memory,
@@ -46,10 +63,14 @@ impl AppState {
 }
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let v1 = Router::new()
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/embeddings", post(embeddings))
         .route("/v1/models", get(models))
+        .layer(middleware::from_fn_with_state(state.clone(), shed_load));
+
+    let api = Router::new()
+        .merge(v1)
         .route("/llmo/runtimes", get(list_runtimes))
         .route("/llmo/runtimes/{name}/start", post(start_runtime))
         .route("/llmo/runtimes/{name}/stop", post(stop_runtime))
@@ -64,40 +85,132 @@ pub fn router(state: AppState) -> Router {
         .route("/llmo/hardware", get(hardware))
         .route("/llmo/plan", post(plan))
         .route("/llmo/plan/presets", get(presets))
-        .layer(middleware::from_fn_with_state(state.clone(), auth))
+        .route("/llmo/whoami", get(whoami))
+        .route("/metrics", get(metrics))
+        .layer(middleware::from_fn_with_state(state.clone(), authenticate));
+
+    let body_limit = state.cfg.server.max_body_mb.max(1) * 1024 * 1024;
+    Router::new()
+        .merge(api)
         .route("/", get(ui))
         .route("/health", get(|| async { Json(json!({ "status": "ok" })) }))
-        .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
+        .route("/ready", get(ready))
+        .layer(middleware::from_fn(observe))
+        .layer(DefaultBodyLimit::max(body_limit))
         .with_state(state)
 }
 
-async fn auth(State(state): State<AppState>, req: Request, next: Next) -> Response {
-    if let Some(key) = &state.cfg.server.api_key {
-        let presented = req
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .unwrap_or("");
-        if !constant_time_eq(presented.as_bytes(), key.as_bytes()) {
-            return Error::Unauthorized.into_response();
-        }
-    }
-    next.run(req).await
+// ---------------------------------------------------------------- middleware
+
+fn request_id(headers: &HeaderMap) -> String {
+    headers
+        .get(H_REQUEST_ID)
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty() && v.len() <= 128 && v.bytes().all(|b| b.is_ascii_graphic()))
+        .map(String::from)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string())
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+/// Request id, access log, metrics and baseline security headers.
+async fn observe(req: Request, next: Next) -> Response {
+    let started = Instant::now();
+    let rid = request_id(req.headers());
+    let method = req.method().to_string();
+    let route = req
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_else(|| "unmatched".into());
+    let path = req.uri().path().to_string();
+    let span = tracing::info_span!("request", id = %rid);
+    METRICS.inflight.fetch_add(1, Ordering::Relaxed);
+    let mut resp = next.run(req).instrument(span.clone()).await;
+    METRICS.inflight.fetch_sub(1, Ordering::Relaxed);
+
+    let status = resp.status().as_u16();
+    let secs = started.elapsed().as_secs_f64();
+    METRICS.observe_request(&method, &route, status, secs);
+    let who = resp
+        .extensions()
+        .get::<Principal>()
+        .map(|p| p.name.clone())
+        .unwrap_or_else(|| "-".into());
+    span.in_scope(|| {
+        tracing::info!(
+            target: "llmo::access",
+            %method, %path, %route, status, ms = (secs * 1000.0).round() as u64, principal = %who,
+            "request"
+        )
+    });
+    let h = resp.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(&rid) {
+        h.insert(H_REQUEST_ID, v);
+    }
+    h.entry(header::X_CONTENT_TYPE_OPTIONS)
+        .or_insert(HeaderValue::from_static("nosniff"));
+    h.entry(header::REFERRER_POLICY)
+        .or_insert(HeaderValue::from_static("no-referrer"));
+    resp
+}
+
+async fn authenticate(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
+    let bearer = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+        })
+        .map(str::trim);
+    match state.auth.authenticate(bearer) {
+        Ok(p) => {
+            req.extensions_mut().insert(p.clone());
+            let mut resp = next.run(req).await;
+            resp.extensions_mut().insert(p);
+            resp
+        }
+        Err(e) => {
+            METRICS.auth_failures.fetch_add(1, Ordering::Relaxed);
+            let ip = req
+                .extensions()
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|c| c.0.ip().to_string())
+                .unwrap_or_else(|| "-".into());
+            tracing::warn!(target: "llmo::audit", action = "auth_failed", %ip, path = %req.uri().path(), "audit");
+            e.into_response()
+        }
+    }
+}
+
+/// Reject with 503 when `max_concurrent_requests` are already in flight.
+/// The permit lives until the response body (including SSE) is finished.
+async fn shed_load(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    let Ok(permit) = state.limiter.clone().try_acquire_owned() else {
+        METRICS.rejected.fetch_add(1, Ordering::Relaxed);
+        return Error::Overloaded.into_response();
+    };
+    let resp = next.run(req).await;
+    let (parts, body) = resp.into_parts();
+    let guarded = body.into_data_stream().map(move |chunk| {
+        let _held = &permit;
+        chunk
+    });
+    Response::from_parts(parts, Body::from_stream(guarded))
 }
 
 // ---------------------------------------------------------------- OpenAI API
 
 async fn chat_completions(
     State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Response> {
     let opts = MemoryOptions::from_headers(&headers)?;
+    if opts.recall || opts.store {
+        who.require_namespace(&opts.namespace)?;
+    }
     let p = chat::prepare(&state, body, opts).await?;
     let resp = state
         .runtimes
@@ -233,8 +346,11 @@ async fn list_runtimes(State(state): State<AppState>, Query(q): Query<ProbeQuery
 
 async fn start_runtime(
     State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
     Path(name): Path<String>,
 ) -> Result<Json<Value>> {
+    who.require_admin("runtime start")?;
+    audit(&who, "runtime_start", &name);
     let rt = state
         .runtimes
         .get(&name)
@@ -245,8 +361,11 @@ async fn start_runtime(
 
 async fn stop_runtime(
     State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
     Path(name): Path<String>,
 ) -> Result<Json<Value>> {
+    who.require_admin("runtime stop")?;
+    audit(&who, "runtime_stop", &name);
     let rt = state
         .runtimes
         .get(&name)
@@ -264,11 +383,13 @@ async fn stop_runtime(
 
 async fn add_memory(
     State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
     Json(new): Json<NewMemory>,
 ) -> Result<(StatusCode, Json<memory::Memory>)> {
     if !chat::valid_ident(&new.namespace) {
         return Err(Error::BadRequest("invalid namespace".into()));
     }
+    who.require_namespace(&new.namespace)?;
     Ok((StatusCode::CREATED, Json(state.memory.remember(new).await?)))
 }
 
@@ -281,10 +402,23 @@ struct ListQuery {
     all: bool,
 }
 
+/// Non-admins must name a namespace they can access.
+fn scope(who: &Principal, namespace: Option<&str>) -> Result<()> {
+    match namespace {
+        Some(ns) => who.require_namespace(ns),
+        None if who.is_admin() => Ok(()),
+        None => Err(Error::BadRequest(
+            "`namespace` is required for this key".into(),
+        )),
+    }
+}
+
 async fn list_memory(
     State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Value>> {
+    scope(&who, q.namespace.as_deref())?;
     let store = state.memory.store.clone();
     let limit = q.limit.unwrap_or(50).min(10_000);
     let items =
@@ -295,6 +429,7 @@ async fn list_memory(
 
 async fn forget_memory(
     State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Value>> {
     if !q.all && q.namespace.is_none() && q.session.is_none() {
@@ -302,6 +437,19 @@ async fn forget_memory(
             "pass namespace, session, or all=true".into(),
         ));
     }
+    if q.all {
+        who.require_admin("forget all memories")?;
+    } else {
+        scope(&who, q.namespace.as_deref())?;
+    }
+    audit(
+        &who,
+        "memory_forget",
+        &format!(
+            "namespace={:?} session={:?} all={}",
+            q.namespace, q.session, q.all
+        ),
+    );
     let store = state.memory.store.clone();
     let n = memory::blocking(move || {
         store.delete_where(q.namespace.as_deref(), q.session.as_deref(), q.all)
@@ -321,8 +469,10 @@ struct SearchBody {
 
 async fn search_memory(
     State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
     Json(b): Json<SearchBody>,
 ) -> Result<Json<Value>> {
+    who.require_namespace(&b.namespace)?;
     let hits = state
         .memory
         .search(&b.namespace, &b.query, b.k, b.min_score)
@@ -330,34 +480,57 @@ async fn search_memory(
     Ok(Json(json!({ "results": hits })))
 }
 
-async fn memory_stats(State(state): State<AppState>) -> Result<Json<Value>> {
+async fn memory_stats(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+) -> Result<Json<Value>> {
     let store = state.memory.store.clone();
-    let stats = memory::blocking(move || store.stats()).await?;
+    let mut stats = memory::blocking(move || store.stats()).await?;
+    stats.retain(|s| who.can_access(&s.namespace));
     Ok(Json(
         json!({ "embedder": state.memory.embedder.model_id(), "namespaces": stats }),
     ))
 }
 
-async fn reindex_memory(State(state): State<AppState>) -> Result<Json<Value>> {
+async fn reindex_memory(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+) -> Result<Json<Value>> {
+    who.require_admin("memory reindex")?;
+    audit(&who, "memory_reindex", "");
     Ok(Json(json!({ "reindexed": state.memory.reindex().await? })))
+}
+
+/// Fetch a memory the caller may see; others look like "not found" so ids
+/// in foreign namespaces are not confirmed to exist.
+async fn visible_memory(state: &AppState, who: &Principal, id: &str) -> Result<memory::Memory> {
+    let store = state.memory.store.clone();
+    let id2 = id.to_string();
+    memory::blocking(move || store.get(&id2))
+        .await?
+        .filter(|m| who.can_access(&m.namespace))
+        .ok_or_else(|| Error::NotFound(format!("memory `{id}`")))
 }
 
 async fn get_memory(
     State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
     Path(id): Path<String>,
 ) -> Result<Json<memory::Memory>> {
-    let store = state.memory.store.clone();
-    let id2 = id.clone();
-    memory::blocking(move || store.get(&id2))
-        .await?
-        .map(Json)
-        .ok_or_else(|| Error::NotFound(format!("memory `{id}`")))
+    Ok(Json(visible_memory(&state, &who, &id).await?))
 }
 
 async fn delete_memory(
     State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
+    let m = visible_memory(&state, &who, &id).await?;
+    audit(
+        &who,
+        "memory_delete",
+        &format!("id={id} namespace={}", m.namespace),
+    );
     let store = state.memory.store.clone();
     let id2 = id.clone();
     if memory::blocking(move || store.delete(&id2)).await? {
@@ -410,21 +583,128 @@ async fn plan(Json(req): Json<crate::planner::PlanRequest>) -> Result<Json<crate
     Ok(Json(p))
 }
 
-/// Run the server until Ctrl-C / SIGTERM, then stop managed runtimes.
-pub async fn serve(state: AppState, bind: &str) -> anyhow::Result<()> {
-    let listener = tokio::net::TcpListener::bind(bind).await?;
-    let addr = listener.local_addr()?;
-    if !addr.ip().is_loopback() {
-        tracing::warn!(%addr, "listening on a non-loopback address; set server.api_key");
+async fn whoami(Extension(who): Extension<Principal>) -> Json<Value> {
+    let role = if who.is_admin() { "admin" } else { "user" };
+    Json(json!({ "name": who.name, "role": role, "namespaces": who.namespaces }))
+}
+
+/// Readiness: the database answers and the server is not draining.
+async fn ready(State(state): State<AppState>) -> Response {
+    if state.draining.load(Ordering::SeqCst) {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "status": "draining" })),
+        )
+            .into_response();
     }
-    tracing::info!(%addr, embedder = %state.memory.embedder.model_id(), "llmo listening");
+    let store = state.memory.store.clone();
+    match memory::blocking(move || {
+        store.ping()?;
+        store.schema_version()
+    })
+    .await
+    {
+        Ok(v) => Json(json!({ "status": "ready", "schema_version": v })).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "readiness check failed");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "status": "database_unavailable" })),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn metrics(State(state): State<AppState>) -> Response {
+    use std::fmt::Write as _;
+    let mut extra = String::new();
+    let _ = writeln!(
+        extra,
+        "# HELP llmo_runtime_up Whether a runtime is running/reachable (1) or not (0)."
+    );
+    let _ = writeln!(extra, "# TYPE llmo_runtime_up gauge");
+    for r in state.runtimes.info(false).await {
+        let up = matches!(
+            r.status,
+            crate::runtime::Status::Running | crate::runtime::Status::External
+        );
+        let _ = writeln!(
+            extra,
+            "llmo_runtime_up{{runtime=\"{}\",managed=\"{}\"}} {}",
+            crate::metrics::esc(&r.name),
+            r.managed,
+            up as u8
+        );
+        let _ = writeln!(
+            extra,
+            "llmo_runtime_inflight{{runtime=\"{}\"}} {}",
+            crate::metrics::esc(&r.name),
+            r.in_flight
+        );
+    }
+    let store = state.memory.store.clone();
+    if let Ok(n) = memory::blocking(move || store.count()).await {
+        let _ = writeln!(
+            extra,
+            "# HELP llmo_memories Memories stored.\n# TYPE llmo_memories gauge\nllmo_memories {n}"
+        );
+    }
+    (
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        METRICS.render(&extra),
+    )
+        .into_response()
+}
+
+/// How long in-flight requests (e.g. long generations) get to finish after
+/// a shutdown signal before the process exits anyway.
+pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Serve on an already-bound listener until Ctrl-C / SIGTERM, drain, then
+/// stop managed runtimes.
+pub async fn serve(state: AppState, listener: tokio::net::TcpListener) -> anyhow::Result<()> {
+    let addr = listener.local_addr()?;
+    state.cfg.check_bind(&addr)?;
+    tracing::info!(
+        %addr,
+        embedder = %state.memory.embedder.model_id(),
+        auth = state.auth.enabled(),
+        runtimes = state.runtimes.runtimes().len(),
+        version = env!("CARGO_PKG_VERSION"),
+        "llmo listening"
+    );
     let reaper = state.runtimes.spawn_reaper();
     let runtimes = state.runtimes.clone();
-    axum::serve(listener, router(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    let draining = state.draining.clone();
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        draining.store(true, Ordering::SeqCst);
+        let _ = stop_tx.send(true);
+    });
+    let mut graceful_rx = stop_rx.clone();
+    let server = axum::serve(
+        listener,
+        router(state).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        let _ = graceful_rx.wait_for(|v| *v).await;
+    });
+    let mut deadline_rx = stop_rx;
+    tokio::select! {
+        r = server => r?,
+        _ = async move {
+            let _ = deadline_rx.wait_for(|v| *v).await;
+            tokio::time::sleep(DRAIN_TIMEOUT).await;
+        } => tracing::warn!("drain timeout reached; closing remaining connections"),
+    }
     reaper.abort();
     runtimes.stop_all().await;
+    tracing::info!("stopped");
     Ok(())
 }
 
@@ -442,17 +722,20 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     let term = std::future::pending::<()>();
     tokio::select! { _ = ctrl_c => {}, _ = term => {} }
-    tracing::info!("shutting down");
+    tracing::info!("shutdown requested; draining in-flight requests");
 }
 
 #[cfg(test)]
 mod tests {
-    use super::constant_time_eq;
+    use super::*;
 
     #[test]
-    fn ct_eq() {
-        assert!(constant_time_eq(b"abc", b"abc"));
-        assert!(!constant_time_eq(b"abc", b"abd"));
-        assert!(!constant_time_eq(b"abc", b"ab"));
+    fn request_ids() {
+        let mut h = HeaderMap::new();
+        assert_eq!(request_id(&h).len(), 32);
+        h.insert(H_REQUEST_ID, HeaderValue::from_static("abc-123"));
+        assert_eq!(request_id(&h), "abc-123");
+        h.insert(H_REQUEST_ID, HeaderValue::from_static("has space"));
+        assert_ne!(request_id(&h), "has space");
     }
 }

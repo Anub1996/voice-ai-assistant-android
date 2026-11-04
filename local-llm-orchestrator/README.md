@@ -77,25 +77,31 @@ laptop, a mixture-of-experts model gets you 30B-class quality at 20+ tok/s.
 
 ## Install
 
+**Easiest:** download the binary for your OS from Releases and double-click
+it (`llmo.exe` on Windows). It creates a config on first run, starts the
+server, and opens the UI in your browser. Keep the window open; close it or
+press Ctrl+C to stop. If something fails, the window stays open with the
+error.
+
+> Windows may show "Windows protected your PC" for unsigned downloads:
+> click **More info → Run anyway**.
+
+From a terminal:
+
 ```sh
-cargo install --path .        # or: cargo build --release
-llmo init                     # writes ~/.config/llmo/config.toml
-$EDITOR ~/.config/llmo/config.toml
-llmo serve
+llmo                 # same as double-clicking: serve + open the UI
+llmo serve           # server only (services, containers)
+llmo init            # write the fully commented example config
 ```
 
-Requires Rust 1.88+. SQLite is bundled; no system libraries needed.
+From source: `cargo install --path .` (Rust 1.88+; SQLite is bundled).
+Cross-compile for Windows from Linux with
+`cargo build --release --target x86_64-pc-windows-gnu` (needs
+`gcc-mingw-w64-x86-64`).
 
-**Windows:** download `llmo.exe` (or build it with `cargo build --release`),
-then in PowerShell:
-
-```powershell
-.\llmo.exe init      # writes %APPDATA%\llmo\config.toml
-.\llmo.exe serve     # then open http://127.0.0.1:8765
-```
-
-Cross-compiling from Linux: `cargo build --release --target x86_64-pc-windows-gnu`
-(needs `gcc-mingw-w64-x86-64`; the linker is set in `.cargo/config.toml`).
+**Production** (systemd, Docker/Kubernetes, API keys and roles, metrics,
+audit log, backups, upgrades): see [docs/OPERATIONS.md](docs/OPERATIONS.md)
+and [SECURITY.md](SECURITY.md).
 
 ## Configure
 
@@ -211,10 +217,14 @@ llmo memory reindex                             # after changing embedder
 | `POST /llmo/plan`                      | `{model, hardware?, ctx?, target_tps?}`  |
 | `GET  /llmo/plan/presets`              | Model presets and quantizations          |
 | `GET  /`                               | Web UI                                   |
+| `GET  /llmo/whoami`                    | Identity and role of the calling key     |
+| `GET  /metrics`                        | Prometheus metrics                       |
+| `GET  /ready`                          | Readiness (DB reachable, not draining)   |
 | `GET  /health`                         | Liveness (never requires auth)           |
 
-Set `server.api_key` to require `Authorization: Bearer <key>` on everything
-except `/health`. Errors use the OpenAI shape: `{"error":{"message","type"}}`.
+Set `server.api_key` (or `[[server.keys]]` with roles and namespace scopes)
+to require `Authorization: Bearer <key>` on everything except `/`, `/health`
+and `/ready`. Errors use the OpenAI shape: `{"error":{"message","type"}}`.
 
 ## How it works
 

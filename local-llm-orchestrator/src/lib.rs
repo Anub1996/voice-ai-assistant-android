@@ -6,11 +6,13 @@
 //! gives every conversation persistent, private, searchable long-term memory
 //! stored in SQLite on your own disk.
 
+pub mod auth;
 pub mod chat;
 pub mod config;
 pub mod error;
 pub mod hardware;
 pub mod memory;
+pub mod metrics;
 pub mod planner;
 pub mod runtime;
 pub mod server;

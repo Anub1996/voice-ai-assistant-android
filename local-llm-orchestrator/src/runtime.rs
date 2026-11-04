@@ -20,6 +20,7 @@ use tokio::sync::Mutex;
 
 use crate::config::{Config, RuntimeConfig};
 use crate::error::{Error, Result};
+use crate::metrics::METRICS;
 
 const STDERR_TAIL: usize = 30;
 
@@ -148,6 +149,7 @@ pub struct RuntimeManager {
     runtimes: Vec<Arc<Runtime>>,
     default_runtime: Option<String>,
     budget_mb: u64,
+    upstream_timeout: Duration,
     /// Serialises start / stop / eviction decisions.
     lifecycle: Mutex<()>,
     epoch: Instant,
@@ -157,6 +159,10 @@ impl RuntimeManager {
     pub fn new(cfg: &Config) -> Self {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
+            // Per-read limit: a stalled runtime cannot hold a request forever.
+            .read_timeout(Duration::from_secs(
+                cfg.server.stream_idle_timeout_secs.max(1),
+            ))
             // Never route local traffic through a system proxy.
             .no_proxy()
             .build()
@@ -171,6 +177,7 @@ impl RuntimeManager {
                 .collect(),
             default_runtime: cfg.default_runtime.clone(),
             budget_mb: cfg.budget.memory_mb,
+            upstream_timeout: Duration::from_secs(cfg.server.upstream_timeout_secs.max(1)),
             lifecycle: Mutex::new(()),
             epoch: Instant::now(),
         }
@@ -251,14 +258,28 @@ impl RuntimeManager {
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        // Don't pop up a console window for the runtime on Windows.
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         tracing::info!(runtime = rt.name(), command = %proc_cfg.command, "starting runtime");
-        let mut child = cmd.spawn().map_err(|e| {
-            let reason = format!("spawning `{}`: {e}", proc_cfg.command);
-            Error::Startup {
-                runtime: rt.name().into(),
-                reason,
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let hint = if e.kind() == std::io::ErrorKind::NotFound {
+                    " (is it installed and on PATH?)"
+                } else {
+                    ""
+                };
+                let reason = format!("spawning `{}`: {e}{hint}", proc_cfg.command);
+                let mut st = rt.state.lock().await;
+                rt.set_status(&mut st, Status::Failed(reason.clone()));
+                METRICS.runtime_event(rt.name(), "start_failure");
+                return Err(Error::Startup {
+                    runtime: rt.name().into(),
+                    reason,
+                });
             }
-        })?;
+        };
         if let Some(stderr) = child.stderr.take() {
             let tail = rt.stderr_tail.clone();
             tail.lock().unwrap().clear();
@@ -302,6 +323,7 @@ impl RuntimeManager {
                 rt.set_status(&mut st, Status::Running);
                 rt.last_used_ms
                     .store(self.epoch.elapsed().as_millis() as i64, Ordering::SeqCst);
+                METRICS.runtime_event(rt.name(), "start");
                 tracing::info!(runtime = rt.name(), "runtime ready");
                 return Ok(());
             }
@@ -316,6 +338,7 @@ impl RuntimeManager {
                     self.tail(rt)
                 );
                 rt.set_status(&mut st, Status::Failed(reason.clone()));
+                METRICS.runtime_event(rt.name(), "start_failure");
                 return Err(Error::Startup {
                     runtime: rt.name().into(),
                     reason,
@@ -370,6 +393,7 @@ impl RuntimeManager {
                 for_runtime = target.name(),
                 "evicting runtime"
             );
+            METRICS.runtime_event(victim.name(), "eviction");
             self.stop_locked(&victim).await;
         }
     }
@@ -468,6 +492,7 @@ impl RuntimeManager {
                     idle_secs = idle_ms / 1000,
                     "idle timeout"
                 );
+                METRICS.runtime_event(rt.name(), "idle_stop");
                 self.stop(rt).await;
             }
         }
@@ -484,16 +509,21 @@ impl RuntimeManager {
         })
     }
 
+    /// POST to a runtime. Non-streaming requests get a total deadline;
+    /// streaming ones are bounded per read (`stream_idle_timeout_secs`).
     pub async fn post(&self, lease: &Lease, path: &str, body: &Value) -> Result<reqwest::Response> {
-        self.http
-            .post(lease.runtime.url(path))
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| Error::Upstream {
-                runtime: lease.runtime.name().into(),
-                reason: e.to_string(),
-            })
+        let mut req = self.http.post(lease.runtime.url(path)).json(body);
+        if !body["stream"].as_bool().unwrap_or(false) {
+            req = req.timeout(self.upstream_timeout);
+        }
+        req.send().await.map_err(|e| Error::Upstream {
+            runtime: lease.runtime.name().into(),
+            reason: if e.is_timeout() {
+                format!("timed out: {e}")
+            } else {
+                e.to_string()
+            },
+        })
     }
 
     /// Embeddings via a runtime's OpenAI-compatible `/v1/embeddings`.
@@ -620,6 +650,24 @@ mod tests {
         assert!(matches!(m.resolve("x"), Err(Error::NoRuntime(_))));
     }
 
+    #[tokio::test]
+    async fn missing_executable_is_reported() {
+        let m = RuntimeManager::new(&cfg(r#"
+            [[runtimes]]
+            name = "ghost"
+            base_url = "http://127.0.0.1:9"
+            [runtimes.process]
+            command = "definitely-not-installed-llmo-test"
+            "#));
+        let msg = m.acquire("ghost/x").await.err().unwrap().to_string();
+        assert!(msg.contains("on PATH"), "{msg}");
+        assert!(matches!(
+            m.get("ghost").unwrap().status(),
+            Status::Failed(_)
+        ));
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn startup_failure_is_reported() {
         let m = RuntimeManager::new(&cfg(r#"

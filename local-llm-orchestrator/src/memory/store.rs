@@ -140,7 +140,9 @@ impl MemoryStore {
     fn init(conn: Connection) -> Result<Self> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.execute_batch(SCHEMA)?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        migrate(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -318,6 +320,53 @@ impl MemoryStore {
     }
 }
 
+/// Current on-disk schema version (`PRAGMA user_version`).
+pub const SCHEMA_VERSION: i64 = 1;
+
+/// Forward-only migrations, applied in a transaction.
+fn migrate(conn: &Connection) -> Result<()> {
+    let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    anyhow::ensure!(
+        v <= SCHEMA_VERSION,
+        "memory database has schema v{v}, newer than this llmo supports (v{SCHEMA_VERSION}); upgrade llmo"
+    );
+    if v < 1 {
+        conn.execute_batch(&format!("BEGIN; {SCHEMA} PRAGMA user_version = 1; COMMIT;"))?;
+    }
+    // Future: if v < 2 { ... PRAGMA user_version = 2 }
+    Ok(())
+}
+
+impl MemoryStore {
+    /// Cheap liveness check of the database (used by `/ready`).
+    pub fn ping(&self) -> Result<()> {
+        self.conn().query_row("SELECT 1", [], |_| Ok(()))?;
+        Ok(())
+    }
+
+    pub fn schema_version(&self) -> Result<i64> {
+        Ok(self
+            .conn()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))?)
+    }
+
+    /// Consistent online backup to a new file (`VACUUM INTO`).
+    pub fn backup(&self, dest: &Path) -> Result<()> {
+        anyhow::ensure!(!dest.exists(), "{} already exists", dest.display());
+        self.conn()
+            .execute("VACUUM INTO ?1", [dest.to_string_lossy()])
+            .with_context(|| format!("backing up to {}", dest.display()))?;
+        restrict_permissions(dest);
+        Ok(())
+    }
+
+    pub fn count(&self) -> Result<i64> {
+        Ok(self
+            .conn()
+            .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))?)
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct NamespaceStats {
     pub namespace: String,
@@ -457,6 +506,33 @@ mod tests {
         assert!(s.delete_where(None, None, false).is_err());
         assert_eq!(s.delete_where(Some("a"), None, false).unwrap(), 1);
         assert_eq!(s.stats().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn schema_is_versioned_and_backup_restores() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = HashEmbedder::new(64);
+        let s = MemoryStore::open(&dir.path().join("a.db")).unwrap();
+        assert_eq!(s.schema_version().unwrap(), SCHEMA_VERSION);
+        add(&s, &e, "default", "back me up please");
+        let bak = dir.path().join("backup.db");
+        s.backup(&bak).unwrap();
+        assert!(s.backup(&bak).is_err(), "never overwrites");
+        let restored = MemoryStore::open(&bak).unwrap();
+        assert_eq!(restored.count().unwrap(), 1);
+        s.ping().unwrap();
+    }
+
+    #[test]
+    fn refuses_newer_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("new.db");
+        Connection::open(&p)
+            .unwrap()
+            .pragma_update(None, "user_version", 99)
+            .unwrap();
+        let err = MemoryStore::open(&p).err().unwrap().to_string();
+        assert!(err.contains("newer"), "{err}");
     }
 
     #[test]

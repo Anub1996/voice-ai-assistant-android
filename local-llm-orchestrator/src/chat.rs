@@ -131,6 +131,9 @@ pub async fn prepare(state: &AppState, mut body: Value, opts: MemoryOptions) -> 
             .await?
         {
             injected = used.len();
+            crate::metrics::METRICS
+                .memories_recalled
+                .fetch_add(injected as u64, std::sync::atomic::Ordering::Relaxed);
             inject_system(messages, &ctx);
         }
     }
@@ -207,7 +210,12 @@ pub async fn store_turn(
             pinned: false,
         };
         match memory.remember(new).await {
-            Ok(_) => stored += 1,
+            Ok(_) => {
+                stored += 1;
+                crate::metrics::METRICS
+                    .memories_stored
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
             Err(e) => tracing::warn!(error = %e, "failed to store conversation turn"),
         }
     }
