@@ -54,6 +54,8 @@ pub fn detect() -> Hardware {
     linux(&mut hw);
     #[cfg(target_os = "macos")]
     macos(&mut hw);
+    #[cfg(windows)]
+    windows(&mut hw);
     if !hw.unified_memory {
         hw.gpu = nvidia();
     }
@@ -129,6 +131,38 @@ fn macos(hw: &mut Hardware) {
                 bandwidth_gbs: bw,
             });
         }
+    }
+}
+
+#[cfg(windows)]
+fn windows(hw: &mut Hardware) {
+    // One PowerShell call: total bytes, free KiB, CPU name, physical cores.
+    let script = "$c=Get-CimInstance Win32_ComputerSystem; $o=Get-CimInstance Win32_OperatingSystem; \
+                  $p=@(Get-CimInstance Win32_Processor); $c.TotalPhysicalMemory; $o.FreePhysicalMemory; \
+                  $p[0].Name; ($p | Measure-Object NumberOfCores -Sum).Sum";
+    let Ok(out) = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()
+    else {
+        return;
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if let Some(b) = lines.first().and_then(|v| v.parse::<f64>().ok()) {
+        hw.ram_gb = round1(b / 1_073_741_824.0);
+    }
+    if let Some(kb) = lines.get(1).and_then(|v| v.parse::<f64>().ok()) {
+        hw.ram_available_gb = round1(kb / 1_048_576.0);
+    }
+    if let Some(name) = lines.get(2) {
+        hw.cpu_name = name.to_string();
+    }
+    if let Some(n) = lines.get(3).and_then(|v| v.parse::<usize>().ok()) {
+        hw.physical_cores = n.max(1);
     }
 }
 

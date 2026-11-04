@@ -86,6 +86,17 @@ llmo serve
 
 Requires Rust 1.88+. SQLite is bundled; no system libraries needed.
 
+**Windows:** download `llmo.exe` (or build it with `cargo build --release`),
+then in PowerShell:
+
+```powershell
+.\llmo.exe init      # writes %APPDATA%\llmo\config.toml
+.\llmo.exe serve     # then open http://127.0.0.1:8765
+```
+
+Cross-compiling from Linux: `cargo build --release --target x86_64-pc-windows-gnu`
+(needs `gcc-mingw-w64-x86-64`; the linker is set in `.cargo/config.toml`).
+
 ## Configure
 
 See [`config.example.toml`](config.example.toml). The essentials:
