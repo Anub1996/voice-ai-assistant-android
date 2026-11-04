@@ -91,7 +91,7 @@ async fn wait_for_memories(state: &AppState, ns: &str, n: usize) -> Vec<llmo::me
 #[tokio::test]
 async fn chat_recalls_and_stores_memory() {
     let (mock, seen) = spawn_mock("Noted, I will keep answers in Rust from now on.").await;
-    let (llmo, state) = spawn_llmo(config(&mock, "")).await;
+    let (llmo, state) = spawn_llmo(config(&mock, "[memory]\nstore_assistant = true")).await;
     let http = reqwest::Client::new();
 
     // Seed a fact via the management API.
@@ -163,6 +163,12 @@ async fn memory_off_and_namespace_isolation() {
         .await
         .unwrap();
     assert_eq!(r.headers()["x-llmo-memories"], "0");
+    // Default config remembers the user turn but not the assistant reply.
+    let bob = wait_for_memories(&state, "bob", 1).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let bob_now = state.memory.store.list(Some("bob"), None, 10).unwrap();
+    assert_eq!(bob_now.len(), 1, "{bob_now:?}");
+    assert_eq!(bob[0].role, "user");
 
     // Memory off: nothing injected or stored.
     let r = http
@@ -196,7 +202,7 @@ async fn memory_off_and_namespace_isolation() {
 #[tokio::test]
 async fn streaming_is_forwarded_and_captured() {
     let (mock, _seen) = spawn_mock("Streaming replies are remembered too.").await;
-    let (llmo, state) = spawn_llmo(config(&mock, "")).await;
+    let (llmo, state) = spawn_llmo(config(&mock, "[memory]\nstore_assistant = true")).await;
     let r = reqwest::Client::new()
         .post(format!("{llmo}/v1/chat/completions"))
         .header("x-llmo-namespace", "stream")

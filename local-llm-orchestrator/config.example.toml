@@ -18,6 +18,8 @@ max_context_chars = 4000
 recency_half_life_days = 30
 # Scrub emails, API keys, tokens and similar secrets before storing.
 redact = true
+# Also remember assistant replies (off: replies restate memories and snowball).
+store_assistant = false
 
 # Built-in, offline, model-free embedder (default):
 [memory.embedder]

@@ -54,6 +54,29 @@ enum Cmd {
         system: Option<String>,
         prompt: Vec<String>,
     },
+    /// Show detected RAM, CPU, GPU and memory bandwidth.
+    Hardware,
+    /// Plan how to run a model on this machine: best quant, speed, command.
+    Plan {
+        /// Preset id (see `llmo plan --list`).
+        #[arg(default_value = "gemma-3-27b")]
+        model: String,
+        #[arg(long)]
+        list: bool,
+        /// Override detected RAM (GiB).
+        #[arg(long)]
+        ram: Option<f64>,
+        /// Override memory bandwidth (GB/s).
+        #[arg(long)]
+        bandwidth: Option<f64>,
+        /// Add a GPU: VRAM GiB and bandwidth GB/s, e.g. `--gpu 16,288`.
+        #[arg(long, value_parser = parse_gpu)]
+        gpu: Option<(f64, f64)>,
+        #[arg(long, default_value_t = 4096)]
+        ctx: u32,
+        #[arg(long, default_value_t = 20.0)]
+        target: f64,
+    },
     /// Inspect and manage long-term memory.
     #[command(subcommand)]
     Memory(MemoryCmd),
@@ -135,6 +158,28 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let cfg_path = cli.config.clone().unwrap_or_else(Config::default_path);
 
+    match &cli.cmd {
+        Cmd::Hardware => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&llmo::hardware::detect())?
+            );
+            return Ok(());
+        }
+        Cmd::Plan {
+            model,
+            list,
+            ram,
+            bandwidth,
+            gpu,
+            ctx,
+            target,
+        } => {
+            return run_plan(model, *list, *ram, *bandwidth, *gpu, *ctx, *target);
+        }
+        _ => {}
+    }
+
     if let Cmd::Init { force } = cli.cmd {
         if cfg_path.exists() && !force {
             bail!(
@@ -165,7 +210,7 @@ async fn main() -> Result<()> {
     let state = AppState::new(cfg, store);
 
     match cli.cmd {
-        Cmd::Init { .. } => unreachable!(),
+        Cmd::Init { .. } | Cmd::Hardware | Cmd::Plan { .. } => unreachable!(),
         Cmd::Serve { bind } => {
             let bind = bind.unwrap_or_else(|| state.cfg.server.bind.clone());
             server::serve(state, &bind).await?;
@@ -423,4 +468,104 @@ async fn resolve_id(state: &AppState, prefix: &str) -> Result<String> {
         1 => Ok(matches[0].id.clone()),
         n => bail!("id prefix `{prefix}` is ambiguous ({n} matches)"),
     }
+}
+
+fn parse_gpu(s: &str) -> Result<(f64, f64), String> {
+    let (v, b) = s.split_once(',').ok_or("expected VRAM_GIB,BANDWIDTH_GBS")?;
+    Ok((
+        v.trim().parse().map_err(|_| "bad VRAM")?,
+        b.trim().parse().map_err(|_| "bad bandwidth")?,
+    ))
+}
+
+fn run_plan(
+    model: &str,
+    list: bool,
+    ram: Option<f64>,
+    bandwidth: Option<f64>,
+    gpu: Option<(f64, f64)>,
+    ctx: u32,
+    target: f64,
+) -> Result<()> {
+    use llmo::planner;
+    if list {
+        for m in planner::presets() {
+            println!("{:<20} {}", m.id, m.name);
+        }
+        return Ok(());
+    }
+    let mut hw = llmo::hardware::detect();
+    if let Some(r) = ram {
+        hw.ram_gb = r;
+    }
+    if let Some(b) = bandwidth {
+        hw.cpu_bandwidth_gbs = b;
+        hw.bandwidth_source = "given".into();
+    }
+    if let Some((vram_gb, bandwidth_gbs)) = gpu {
+        hw.gpu = Some(llmo::hardware::Gpu {
+            name: "GPU".into(),
+            vram_gb,
+            bandwidth_gbs,
+        });
+        hw.unified_memory = false;
+    }
+    let req = planner::PlanRequest {
+        model: Some(model.to_string()),
+        custom: None,
+        hardware: Some(hw.clone()),
+        ctx,
+        target_tps: target,
+    };
+    let p = planner::plan(&req, || hw.clone()).map_err(anyhow::Error::msg)?;
+    println!(
+        "{} on {:.0} GiB RAM, {:.0} GB/s{}, ctx {}\n",
+        p.model.name,
+        p.hardware.ram_gb,
+        p.hardware.cpu_bandwidth_gbs,
+        p.hardware
+            .gpu
+            .as_ref()
+            .map(|g| format!(" + {:.0} GiB GPU @ {:.0} GB/s", g.vram_gb, g.bandwidth_gbs))
+            .unwrap_or_default(),
+        p.ctx
+    );
+    println!(
+        "{:<9} {:>8} {:>9} {:>6} {:>8}  quality",
+        "quant", "weights", "needs", "fits", "tok/s"
+    );
+    for o in &p.options {
+        let rec = p.recommended.as_ref().is_some_and(|r| r.quant == o.quant);
+        println!(
+            "{:<9} {:>7.1}G {:>8.1}G {:>6} {:>8}  {}{}",
+            o.quant,
+            o.weights_gib,
+            o.ram_gib.max(o.vram_gib),
+            if o.fits { "yes" } else { "no" },
+            if o.fits {
+                format!("{:.1}", o.est_tps)
+            } else {
+                "-".into()
+            },
+            o.quality,
+            if rec { "  <- recommended" } else { "" }
+        );
+    }
+    println!("\n{}\n", p.verdict);
+    if let Some(c) = &p.command {
+        println!("Run:\n  {c}\n");
+    }
+    if let Some(c) = &p.command_speculative {
+        println!("Faster (speculative decoding):\n  {c}\n");
+    }
+    for a in p.alternatives.iter().take(4) {
+        println!(
+            "  alt: {:<34} {:<8} ~{:>5.1} tok/s{}",
+            a.name,
+            a.quant,
+            a.est_tps,
+            if a.meets_target { "  ✓" } else { "" }
+        );
+    }
+    Ok(())
 }

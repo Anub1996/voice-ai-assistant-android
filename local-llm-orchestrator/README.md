@@ -44,6 +44,37 @@ your machine:
   in-process with no model download, and emails/API keys/tokens/private keys
   are scrubbed before anything is written to disk.
 
+## Web UI
+
+`llmo serve` also serves a UI at **http://127.0.0.1:8765/**: chat with
+streaming and memory recall, a memory browser, runtime controls, and a
+**"Run a big model" planner**. The page is one self-contained file; its
+Content-Security-Policy blocks every request to other origins.
+
+## Run a big model on modest hardware
+
+```sh
+llmo plan gemma-3-27b                 # uses detected RAM / CPU / GPU
+llmo plan gemma-3-27b --gpu 16,288    # what if I add an RTX 4060 Ti 16GB?
+llmo plan --list
+```
+
+The planner picks the best GGUF quantization that fits your RAM/VRAM,
+estimates generation speed, and prints the exact `llama-server` command
+(plus a speculative-decoding variant and an llmo config block). It is honest
+about physics: generating a token reads every active weight once, so
+**tokens/s ≈ memory bandwidth ÷ model size**.
+
+| 27B-class goal on 16 GB          | Best fit            | Est. speed  |
+|----------------------------------|---------------------|-------------|
+| Gemma 3 27B, CPU, ~60 GB/s RAM   | IQ3_M, 11.5 GiB     | ~3 tok/s    |
+| Gemma 3 27B, RTX 4060 Ti 16GB    | IQ3_XXS, on GPU     | ~21 tok/s   |
+| Qwen3 30B-A3B (MoE), CPU only    | IQ3_XXS, 3B active  | ~28 tok/s   |
+
+So 20 tok/s from a 27B *dense* model needs ~200–400 GB/s of bandwidth (a GPU
+that holds the model, or an Apple M-series Pro/Max). On an ordinary 16 GB
+laptop, a mixture-of-experts model gets you 30B-class quality at 20+ tok/s.
+
 ## Install
 
 ```sh
@@ -165,6 +196,10 @@ llmo memory reindex                             # after changing embedder
 | `DELETE /llmo/memory?namespace=…`      | Bulk delete (filter or `all=true` required) |
 | `GET  /llmo/memory/stats`              | Counts per namespace                     |
 | `POST /llmo/memory/reindex`            | Re-embed stale memories                  |
+| `GET  /llmo/hardware`                  | Detected RAM, CPU, GPU, bandwidth        |
+| `POST /llmo/plan`                      | `{model, hardware?, ctx?, target_tps?}`  |
+| `GET  /llmo/plan/presets`              | Model presets and quantizations          |
+| `GET  /`                               | Web UI                                   |
 | `GET  /health`                         | Liveness (never requires auth)           |
 
 Set `server.api_key` to require `Authorization: Bearer <key>` on everything
@@ -177,8 +212,9 @@ except `/health`. Errors use the OpenAI shape: `{"error":{"message","type"}}`.
   (`0.5 + 0.5·2^(−age/half_life)`); pinned memories skip decay. Identical
   content in a namespace is de-duplicated. Injected context is capped by
   `max_context_chars`.
-- **Storage** — turns shorter than 16 characters ("ok", "thanks!") are not
-  stored. Streaming replies are stored only if the client received them in
+- **Storage** — user turns are stored; assistant replies only with
+  `memory.store_assistant = true` (replies restate recalled memories, which
+  would otherwise snowball). Turns shorter than 16 characters are skipped. Streaming replies are stored only if the client received them in
   full.
 - **Lifecycle** — each request holds a *lease* on its runtime; leased
   runtimes are never evicted or idle-stopped. Starting a managed runtime

@@ -9,6 +9,8 @@
 pub mod chat;
 pub mod config;
 pub mod error;
+pub mod hardware;
 pub mod memory;
+pub mod planner;
 pub mod runtime;
 pub mod server;

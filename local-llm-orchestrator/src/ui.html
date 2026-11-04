@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llmo</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --panel-2: #f0f2f5; --line: #dfe3e8;
+  --text: #16191d; --muted: #5d6673; --accent: #3b5bdb; --accent-ink: #fff;
+  --ok: #2b8a3e; --ok-bg: #e6f4ea; --warn: #a15c00; --warn-bg: #fff4e0;
+  --bad: #c92a2a; --bad-bg: #fdecec; --user: #e8edfc; --code: #f3f4f6;
+  --radius: 10px; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1115; --panel: #171a20; --panel-2: #1e222a; --line: #2a2f39;
+    --text: #e6e8ec; --muted: #98a1ae; --accent: #7c95ff; --accent-ink: #0f1115;
+    --ok: #69db7c; --ok-bg: #13281a; --warn: #ffc069; --warn-bg: #2d2210;
+    --bad: #ff8787; --bad-bg: #2f1517; --user: #1f2740; --code: #11141a;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1115; --panel: #171a20; --panel-2: #1e222a; --line: #2a2f39;
+  --text: #e6e8ec; --muted: #98a1ae; --accent: #7c95ff; --accent-ink: #0f1115;
+  --ok: #69db7c; --ok-bg: #13281a; --warn: #ffc069; --warn-bg: #2d2210;
+  --bad: #ff8787; --bad-bg: #2f1517; --user: #1f2740; --code: #11141a;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+button, input, select, textarea { font: inherit; color: inherit; }
+.app { display: grid; grid-template-columns: 220px 1fr; height: 100vh; }
+nav { background: var(--panel); border-right: 1px solid var(--line); padding: 18px 12px;
+  display: flex; flex-direction: column; gap: 4px; }
+.brand { font-weight: 700; font-size: 18px; padding: 0 10px 2px; letter-spacing: -.01em; }
+.tag { color: var(--muted); font-size: 12px; padding: 0 10px 16px; }
+nav button { text-align: left; background: none; border: 0; padding: 9px 10px; border-radius: 8px;
+  cursor: pointer; color: var(--muted); font-weight: 500; }
+nav button:hover { background: var(--panel-2); color: var(--text); }
+nav button[aria-current="page"] { background: var(--panel-2); color: var(--text); }
+.status { margin-top: auto; font-size: 12px; color: var(--muted); padding: 10px; display: flex; gap: 8px; align-items: center; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+main { overflow: auto; min-width: 0; }
+section { display: none; padding: 24px 28px 40px; max-width: 1080px; }
+section.active { display: block; }
+h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -.01em; }
+.sub { color: var(--muted); margin: 0 0 20px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); font-weight: 500; }
+input, select, textarea { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.btn { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 8px; padding: 8px 14px;
+  font-weight: 600; cursor: pointer; white-space: nowrap; }
+.btn.ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
+.btn.danger { background: var(--bad-bg); color: var(--bad); border: 1px solid transparent; }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn.sm { padding: 4px 10px; font-size: 13px; }
+.muted { color: var(--muted); } .mono { font-family: var(--mono); font-size: 13px; }
+.chip { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; padding: 2px 8px; border-radius: 99px;
+  background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
+.chip.ok { background: var(--ok-bg); color: var(--ok); border-color: transparent; }
+.chip.warn { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+.chip.bad { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
+.banner { display: none; margin: 0 0 16px; padding: 10px 14px; border-radius: 8px; background: var(--warn-bg); color: var(--warn); }
+.banner.show { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+/* chat */
+#chat.active { display: flex; flex-direction: column; height: 100vh; padding-bottom: 16px; max-width: none; }
+.chat-bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin-bottom: 12px; }
+.chat-bar label { flex: 1 1 140px; } .chat-bar label.model { flex: 2 1 220px; }
+#messages { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 14px; padding: 4px 2px 12px; }
+.msg { max-width: 780px; padding: 10px 14px; border-radius: 12px; white-space: pre-wrap; word-wrap: break-word; }
+.msg.user { align-self: flex-end; background: var(--user); }
+.msg.assistant { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); }
+.msg.error { align-self: flex-start; background: var(--bad-bg); color: var(--bad); }
+.msg pre { background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow: auto;
+  white-space: pre; font-family: var(--mono); font-size: 13px; margin: 8px 0; }
+.meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.empty { margin: auto; text-align: center; color: var(--muted); max-width: 440px; }
+.composer { display: flex; gap: 10px; align-items: end; }
+.composer textarea { flex: 1; resize: none; min-height: 46px; max-height: 200px; padding: 12px; }
+details.sys { margin-bottom: 10px; } details.sys summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+details.sys textarea { width: 100%; margin-top: 6px; min-height: 60px; }
+
+/* tables */
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; padding: 8px; border-bottom: 1px solid var(--line); }
+td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr.rec td { background: var(--ok-bg); }
+tr.nofit td { color: var(--muted); }
+.tbl-wrap { overflow-x: auto; }
+
+/* grid */
+.grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.stack { display: flex; flex-direction: column; gap: 14px; }
+
+/* planner */
+.hw { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.verdict { padding: 14px 16px; border-radius: var(--radius); font-size: 15px; }
+.verdict.ok { background: var(--ok-bg); color: var(--ok); }
+.verdict.warn { background: var(--warn-bg); color: var(--warn); }
+.verdict.bad { background: var(--bad-bg); color: var(--bad); }
+.verdict b { display: block; font-size: 18px; margin-bottom: 4px; }
+.bar { position: relative; height: 8px; border-radius: 4px; background: var(--panel-2); min-width: 120px; }
+.bar i { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: var(--accent); }
+.bar i.ok { background: var(--ok); }
+.bar s { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text); opacity: .5; }
+.cmd { position: relative; }
+.cmd pre { background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 12px; padding-right: 70px;
+  overflow: auto; font-family: var(--mono); font-size: 12.5px; margin: 6px 0 0; white-space: pre-wrap; word-break: break-all; }
+.cmd .btn { position: absolute; top: 30px; right: 8px; }
+.explain { font-size: 13px; color: var(--muted); }
+
+@media (max-width: 760px) {
+  .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  nav { flex-direction: row; overflow-x: auto; padding: 8px; border-right: 0; border-bottom: 1px solid var(--line); align-items: center; }
+  .tag, .status span { display: none; } .status { margin: 0 0 0 auto; }
+  section { padding: 16px; }
+  #chat.active { height: calc(100vh - 56px); }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <nav aria-label="Sections">
+    <div class="brand">llmo</div>
+    <div class="tag">Local LLM memory &amp; runtimes</div>
+    <button data-tab="chat" aria-current="page">Chat</button>
+    <button data-tab="planner">Run a big model</button>
+    <button data-tab="memory">Memory</button>
+    <button data-tab="runtimes">Runtimes</button>
+    <div class="status"><i class="dot" id="health-dot"></i><span id="health-text">connecting…</span></div>
+  </nav>
+  <main>
+    <div class="banner" id="key-banner" style="margin:16px 28px 0">
+      This server requires an API key.
+      <input id="key-input" type="password" placeholder="server.api_key" aria-label="API key">
+      <button class="btn sm" id="key-save">Save</button>
+    </div>
+
+    <!-- CHAT -->
+    <section id="chat" class="active">
+      <div class="chat-bar">
+        <label class="model">Model<select id="model"></select></label>
+        <label>Memory namespace<input id="ns" value="default" spellcheck="false"></label>
+        <label>Memory<select id="mode">
+          <option value="on">Recall + remember</option>
+          <option value="recall">Recall only</option>
+          <option value="store">Remember only</option>
+          <option value="off">Off (private chat)</option>
+        </select></label>
+        <button class="btn ghost" id="new-chat">New chat</button>
+      </div>
+      <details class="sys"><summary>System prompt</summary>
+        <textarea id="system" placeholder="Optional. Recalled memories are appended to it."></textarea>
+      </details>
+      <div id="messages"><div class="empty" id="empty">
+        <h1>Chat with your local models</h1>
+        <p>Everything stays on this machine. Relevant memories from earlier chats in this namespace are recalled automatically.</p>
+      </div></div>
+      <form class="composer" id="composer">
+        <textarea id="prompt" rows="1" placeholder="Message… (Enter to send, Shift+Enter for a new line)" aria-label="Message"></textarea>
+        <button class="btn" id="send" type="submit">Send</button>
+      </form>
+    </section>
+
+    <!-- PLANNER -->
+    <section id="planner">
+      <h1>Run a big model on your hardware</h1>
+      <p class="sub">Finds the best quantization that fits your RAM/VRAM, estimates real generation speed, and writes the exact command to run it.</p>
+      <div class="stack">
+        <div class="card">
+          <div class="row" style="justify-content:space-between;margin-bottom:10px">
+            <strong>Your hardware</strong>
+            <span class="chip" id="hw-src">detecting…</span>
+          </div>
+          <div class="hw">
+            <label>RAM (GiB)<input id="hw-ram" type="number" min="1" step="1"></label>
+            <label>CPU cores<input id="hw-cores" type="number" min="1" step="1"></label>
+            <label>Memory type<select id="hw-bw-preset">
+              <option value="">Custom</option>
+              <option value="40">DDR4 laptop (~40 GB/s)</option>
+              <option value="60">DDR4/DDR5 typical (~60 GB/s)</option>
+              <option value="85">DDR5 dual-channel (~85 GB/s)</option>
+              <option value="120">Apple M4 (120 GB/s)</option>
+              <option value="273">Apple M4 Pro (273 GB/s)</option>
+              <option value="546">Apple M4 Max (546 GB/s)</option>
+            </select></label>
+            <label>Memory bandwidth (GB/s)<input id="hw-bw" type="number" min="1" step="1"></label>
+            <label>Apple unified memory<select id="hw-unified"><option value="0">No</option><option value="1">Yes</option></select></label>
+            <label>GPU<select id="hw-gpu-preset">
+              <option value="">None / custom</option>
+              <option value="RTX 3060 12GB|12|360">RTX 3060 12GB</option>
+              <option value="RTX 4060 Ti 16GB|16|288">RTX 4060 Ti 16GB</option>
+              <option value="RTX 4070 12GB|12|504">RTX 4070 12GB</option>
+              <option value="RTX 5070 Ti 16GB|16|896">RTX 5070 Ti 16GB</option>
+              <option value="RTX 3090 24GB|24|936">RTX 3090 24GB</option>
+              <option value="RTX 4090 24GB|24|1008">RTX 4090 24GB</option>
+            </select></label>
+            <label>VRAM (GiB)<input id="hw-vram" type="number" min="0" step="1" value="0"></label>
+            <label>GPU bandwidth (GB/s)<input id="hw-gbw" type="number" min="0" step="1" value="0"></label>
+          </div>
+          <p class="explain" id="hw-cpu" style="margin:10px 0 0"></p>
+        </div>
+        <div class="card">
+          <div class="row">
+            <label style="flex:2 1 240px">Model<select id="pl-model"></select></label>
+            <label style="flex:1 1 120px">Context (tokens)<select id="pl-ctx">
+              <option>2048</option><option selected>4096</option><option>8192</option><option>16384</option><option>32768</option>
+            </select></label>
+            <label style="flex:1 1 120px">Target speed (tok/s)<input id="pl-target" type="number" min="1" value="20"></label>
+            <button class="btn" id="pl-go">Plan</button>
+          </div>
+          <div class="row" id="pl-custom" style="display:none;margin-top:10px">
+            <label>Total params (B)<input id="c-total" type="number" step="0.1" value="27"></label>
+            <label>Active params (B)<input id="c-active" type="number" step="0.1" value="27"></label>
+            <label>Layers<input id="c-layers" type="number" value="62"></label>
+            <label>KV bytes/token (f16)<input id="c-kv" type="number" value="262144"></label>
+          </div>
+        </div>
+        <div id="pl-result" class="stack"></div>
+        <p class="explain">How the estimate works: generating a token reads every active weight from memory once, so
+          speed ≈ bandwidth × efficiency ÷ model size (efficiency ≈ 60% on CPU, 75% on GPU). The fit check counts the weights,
+          a q8_0 KV cache for the chosen context, about 0.6 GiB of compute buffers, and 2.5 GiB kept free for your OS.
+          Real numbers vary by about ±25%.</p>
+      </div>
+    </section>
+
+    <!-- MEMORY -->
+    <section id="memory">
+      <h1>Memory</h1>
+      <p class="sub">Long-term memory stored in SQLite on this machine. Emails, keys and tokens are redacted before saving.</p>
+      <div class="stack">
+        <div class="card">
+          <div class="row">
+            <label style="flex:1 1 160px">Namespace<input id="m-ns" value="default" spellcheck="false"></label>
+            <label style="flex:3 1 300px">Search<input id="m-q" placeholder="What do you remember about…"></label>
+            <button class="btn" id="m-search">Search</button>
+            <button class="btn ghost" id="m-refresh">Show all</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="row">
+            <label style="flex:3 1 300px">Remember something<input id="m-new" placeholder="e.g. I prefer answers with code examples"></label>
+            <label style="flex:1 1 120px">Tags<input id="m-tags" placeholder="comma,separated"></label>
+            <label>Pin<select id="m-pin"><option value="0">No</option><option value="1">Yes</option></select></label>
+            <button class="btn" id="m-add">Add</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="row" style="justify-content:space-between;margin-bottom:6px">
+            <span id="m-stats" class="muted"></span>
+            <button class="btn danger sm" id="m-forget">Forget namespace…</button>
+          </div>
+          <div class="tbl-wrap"><table>
+            <thead><tr><th style="width:110px">Date</th><th style="width:90px">Role</th><th>Content</th><th style="width:70px">Score</th><th style="width:40px"></th></tr></thead>
+            <tbody id="m-rows"></tbody>
+          </table></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- RUNTIMES -->
+    <section id="runtimes">
+      <h1>Runtimes</h1>
+      <p class="sub">Model servers llmo routes to. Managed runtimes start on first use, are stopped least-recently-used first when the memory budget is full, and shut down when idle.</p>
+      <div class="grid" id="rt-grid"></div>
+    </section>
+  </main>
+</div>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const el = (tag, props = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") e.className = v; else if (k === "text") e.textContent = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v); else e.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) e.append(k);
+  return e;
+};
+const store = {
+  get(k, d) { try { const v = localStorage.getItem("llmo." + k); return v == null ? d : v; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("llmo." + k, v); } catch {} },
+};
+const fmtDate = (s) => new Date(s * 1000).toISOString().slice(0, 10);
+
+// ---------- API ----------
+async function api(path, opts = {}) {
+  const headers = Object.assign({}, opts.headers || {});
+  if (opts.json !== undefined) { headers["content-type"] = "application/json"; opts.body = JSON.stringify(opts.json); }
+  const key = store.get("key", "");
+  if (key) headers["authorization"] = "Bearer " + key;
+  const r = await fetch(path, { method: opts.method || (opts.body ? "POST" : "GET"), headers, body: opts.body, signal: opts.signal });
+  if (r.status === 401) { $("#key-banner").classList.add("show"); throw new Error("API key required"); }
+  if (opts.raw) return r;
+  const text = await r.text();
+  const data = text ? JSON.parse(text) : null;
+  if (!r.ok) throw new Error((data && data.error && data.error.message) || r.statusText);
+  return data;
+}
+$("#key-save").onclick = () => { store.set("key", $("#key-input").value.trim()); $("#key-banner").classList.remove("show"); boot(); };
+
+// ---------- tabs ----------
+const tabs = document.querySelectorAll("nav button[data-tab]");
+function show(tab) {
+  tabs.forEach((b) => b.dataset.tab === tab ? b.setAttribute("aria-current", "page") : b.removeAttribute("aria-current"));
+  document.querySelectorAll("main section").forEach((s) => s.classList.toggle("active", s.id === tab));
+  store.set("tab", tab);
+  if (tab === "memory") loadMemory();
+  if (tab === "runtimes") loadRuntimes();
+  if (tab === "planner" && !planned) runPlan();
+}
+tabs.forEach((b) => b.onclick = () => show(b.dataset.tab));
+
+// ---------- health ----------
+async function health() {
+  try {
+    const r = await fetch("/health"); if (!r.ok) throw 0;
+    $("#health-dot").className = "dot ok"; $("#health-text").textContent = "connected · local only";
+  } catch { $("#health-dot").className = "dot bad"; $("#health-text").textContent = "server unreachable"; }
+}
+
+// ---------- chat ----------
+let history = [];
+let controller = null;
+const session = store.get("session", "") || ("ui-" + Math.random().toString(36).slice(2, 10));
+store.set("session", session);
+["ns", "mode", "system"].forEach((id) => { const v = store.get(id, null); if (v != null) $("#" + id).value = v; $("#" + id).onchange = () => store.set(id, $("#" + id).value); });
+
+async function loadModels() {
+  const sel = $("#model"); const prev = store.get("model", "");
+  try {
+    const data = await api("/v1/models");
+    sel.replaceChildren();
+    const groups = {};
+    for (const m of data.data) if (!m.id.startsWith(m.owned_by + "/")) (groups[m.owned_by] ||= []).push(m.id);
+    for (const [rt, models] of Object.entries(groups)) {
+      const g = el("optgroup", { label: rt });
+      for (const id of models) g.append(el("option", { value: rt + "/" + id, text: id }));
+      sel.append(g);
+    }
+    if (!sel.options.length) sel.append(el("option", { value: "", text: "No models configured" }));
+    if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
+  } catch (e) { sel.replaceChildren(el("option", { value: "", text: "Could not load models" })); }
+}
+$("#model").onchange = () => store.set("model", $("#model").value);
+
+function renderText(node, text) {
+  node.replaceChildren();
+  const parts = text.split(/```/);
+  parts.forEach((p, i) => {
+    if (i % 2) node.append(el("pre", { text: p.replace(/^[\w+-]*\n/, "") }));
+    else if (p) node.append(document.createTextNode(p));
+  });
+}
+function addMsg(role, text) {
+  $("#empty")?.remove();
+  const body = el("div");
+  const m = el("div", { class: "msg " + role }, body);
+  renderText(body, text);
+  $("#messages").append(m);
+  m.scrollIntoView({ block: "end" });
+  return { m, body };
+}
+function setBusy(b) { $("#send").textContent = b ? "Stop" : "Send"; $("#send").classList.toggle("danger", b); }
+
+$("#prompt").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#composer").requestSubmit(); } });
+$("#prompt").addEventListener("input", (e) => { e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px"; });
+$("#new-chat").onclick = () => { history = []; $("#messages").replaceChildren(el("div", { class: "empty", id: "empty" }, el("h1", { text: "New chat" }), el("p", { text: "Memories from earlier chats are still recalled." }))); };
+
+$("#composer").onsubmit = async (e) => {
+  e.preventDefault();
+  if (controller) { controller.abort(); return; }
+  const text = $("#prompt").value.trim(); const model = $("#model").value;
+  if (!text || !model) return;
+  $("#prompt").value = ""; $("#prompt").style.height = "auto";
+  addMsg("user", text);
+  history.push({ role: "user", content: text });
+  const messages = [];
+  if ($("#system").value.trim()) messages.push({ role: "system", content: $("#system").value.trim() });
+  messages.push(...history);
+  const out = addMsg("assistant", "…");
+  controller = new AbortController(); setBusy(true);
+  let reply = "", chunks = 0, first = 0, t0 = performance.now();
+  try {
+    const r = await api("/v1/chat/completions", {
+      raw: true, signal: controller.signal, json: { model, messages, stream: true },
+      headers: { "x-llmo-namespace": $("#ns").value.trim() || "default", "x-llmo-session": session, "x-llmo-memory": $("#mode").value },
+    });
+    if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error((d.error && d.error.message) || r.statusText); }
+    const recalled = +r.headers.get("x-llmo-memories") || 0, runtime = r.headers.get("x-llmo-runtime");
+    const reader = r.body.getReader(); const dec = new TextDecoder(); let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i; while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim(); if (data === "[DONE]") continue;
+        try { const d = JSON.parse(data).choices?.[0]?.delta?.content; if (d) { if (!first) first = performance.now(); reply += d; chunks++; renderText(out.body, reply); out.m.scrollIntoView({ block: "end" }); } } catch {}
+      }
+    }
+    const secs = first ? (performance.now() - first) / 1000 : 0;
+    const meta = el("div", { class: "meta" });
+    if (runtime) meta.append(el("span", { class: "chip", text: runtime }));
+    meta.append(el("span", { class: "chip" + (recalled ? " ok" : ""), text: recalled ? `${recalled} memor${recalled === 1 ? "y" : "ies"} recalled` : "no memories used" }));
+    if (secs > 0.05 && chunks > 1) meta.append(el("span", { class: "chip", text: `~${(chunks / secs).toFixed(1)} tok/s · ${((first - t0) / 1000).toFixed(1)}s to first token` }));
+    out.m.append(meta);
+    history.push({ role: "assistant", content: reply });
+  } catch (err) {
+    if (err.name === "AbortError") { history.push({ role: "assistant", content: reply }); out.m.append(el("div", { class: "meta" }, el("span", { class: "chip warn", text: "stopped" }))); }
+    else { out.m.className = "msg error"; renderText(out.body, String(err.message || err)); history.pop(); }
+  } finally { controller = null; setBusy(false); }
+};
+
+// ---------- memory ----------
+const mns = () => $("#m-ns").value.trim() || "default";
+function memRows(items, scored) {
+  const tb = $("#m-rows"); tb.replaceChildren();
+  if (!items.length) { tb.append(el("tr", {}, el("td", { colspan: 5, class: "muted", text: scored ? "No matching memories." : "No memories in this namespace yet." }))); return; }
+  for (const m of items) {
+    const del = el("button", { class: "btn danger sm", title: "Delete", "aria-label": "Delete memory", text: "✕", onclick: async () => { await api("/llmo/memory/" + m.id, { method: "DELETE" }); tr.remove(); loadStats(); } });
+    const content = el("td", {}, el("div", { text: m.content }), m.tags?.length ? el("div", { class: "meta" }, ...m.tags.map((t) => el("span", { class: "chip", text: t }))) : null);
+    const tr = el("tr", {}, el("td", { class: "mono", text: fmtDate(m.created_at) }),
+      el("td", {}, el("span", { class: "chip" + (m.pinned ? " ok" : ""), text: (m.pinned ? "★ " : "") + m.role })),
+      content, el("td", { class: "mono", text: scored ? m.score.toFixed(2) : "" }), el("td", {}, del));
+    tb.append(tr);
+  }
+}
+async function loadStats() {
+  try {
+    const s = await api("/llmo/memory/stats");
+    const ns = s.namespaces.find((n) => n.namespace === mns());
+    $("#m-stats").textContent = `${ns ? ns.count : 0} memories in “${mns()}” · ${s.namespaces.length} namespace(s) · embedder ${s.embedder}`;
+  } catch {}
+}
+async function loadMemory() {
+  try { const d = await api(`/llmo/memory?namespace=${encodeURIComponent(mns())}&limit=200`); memRows(d.memories, false); } catch (e) { memRows([], false); }
+  loadStats();
+}
+$("#m-refresh").onclick = loadMemory;
+$("#m-ns").onchange = loadMemory;
+$("#m-search").onclick = async () => {
+  const q = $("#m-q").value.trim(); if (!q) return loadMemory();
+  const d = await api("/llmo/memory/search", { json: { namespace: mns(), query: q, k: 20, min_score: 0.05 } });
+  memRows(d.results, true);
+};
+$("#m-q").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#m-search").click(); });
+$("#m-add").onclick = async () => {
+  const content = $("#m-new").value.trim(); if (!content) return;
+  const tags = $("#m-tags").value.split(",").map((t) => t.trim()).filter(Boolean);
+  await api("/llmo/memory", { json: { namespace: mns(), content, tags, pinned: $("#m-pin").value === "1" } });
+  $("#m-new").value = ""; $("#m-tags").value = ""; loadMemory();
+};
+$("#m-forget").onclick = async () => {
+  if (!confirm(`Permanently delete every memory in “${mns()}”?`)) return;
+  await api(`/llmo/memory?namespace=${encodeURIComponent(mns())}`, { method: "DELETE" }); loadMemory();
+};
+
+// ---------- runtimes ----------
+let rtTimer = null;
+async function loadRuntimes() {
+  clearTimeout(rtTimer);
+  const grid = $("#rt-grid");
+  try {
+    const d = await api("/llmo/runtimes?probe=true");
+    grid.replaceChildren();
+    for (const r of d.runtimes) {
+      const st = r.status.state, cls = { running: "ok", external: "ok", starting: "warn", failed: "bad" }[st] || "";
+      const label = st === "external" ? "external · reachable" : st;
+      const actions = el("div", { class: "row", style: "margin-top:12px" });
+      if (r.managed) {
+        const start = el("button", { class: "btn sm", text: "Start", onclick: async (e) => { e.target.disabled = true; e.target.textContent = "Starting…"; try { await api(`/llmo/runtimes/${r.name}/start`, { method: "POST" }); } catch (err) { alert(err.message); } loadRuntimes(); } });
+        start.disabled = st === "running";
+        actions.append(start);
+        actions.append(el("button", { class: "btn ghost sm", text: "Stop", onclick: async () => { await api(`/llmo/runtimes/${r.name}/stop`, { method: "POST" }); loadRuntimes(); } }));
+      }
+      grid.append(el("div", { class: "card" },
+        el("div", { class: "row", style: "justify-content:space-between" }, el("strong", { text: r.name }), el("span", { class: "chip " + cls, text: label })),
+        el("div", { class: "mono muted", style: "margin-top:6px", text: r.base_url }),
+        el("div", { style: "margin-top:8px", text: r.models.join(", ") || "no models listed" }),
+        el("div", { class: "meta" },
+          el("span", { class: "chip", text: r.managed ? "managed" : "external" }),
+          r.memory_mb ? el("span", { class: "chip", text: `${(r.memory_mb / 1024).toFixed(1)} GiB budget` }) : null,
+          el("span", { class: "chip", text: `${r.in_flight} in flight` }),
+          r.idle_secs != null ? el("span", { class: "chip", text: `idle ${r.idle_secs}s` }) : null),
+        r.status.detail ? el("pre", { class: "mono", style: "white-space:pre-wrap;color:var(--bad);margin:8px 0 0", text: r.status.detail }) : null,
+        actions));
+    }
+    if (!d.runtimes.length) grid.append(el("div", { class: "card muted", text: "No runtimes configured. Add one in config.toml, or use the planner to generate one." }));
+  } catch (e) { grid.replaceChildren(el("div", { class: "card", text: "Could not load runtimes: " + e.message })); }
+  if ($("#runtimes").classList.contains("active")) rtTimer = setTimeout(loadRuntimes, 3000);
+}
+
+// ---------- planner ----------
+let planned = false, detected = null, presets = [];
+async function loadPlanner() {
+  try {
+    const [hw, ps] = await Promise.all([api("/llmo/hardware"), api("/llmo/plan/presets")]);
+    detected = hw; presets = ps.models;
+    $("#hw-ram").value = Math.round(hw.ram_gb); $("#hw-cores").value = hw.physical_cores;
+    $("#hw-bw").value = Math.round(hw.cpu_bandwidth_gbs); $("#hw-unified").value = hw.unified_memory ? "1" : "0";
+    if (hw.gpu) { $("#hw-vram").value = hw.gpu.vram_gb; $("#hw-gbw").value = hw.gpu.bandwidth_gbs; }
+    $("#hw-src").textContent = "auto-detected · bandwidth " + hw.bandwidth_source;
+    $("#hw-src").className = "chip " + (hw.bandwidth_source === "detected" ? "ok" : "warn");
+    $("#hw-cpu").textContent = `${hw.cpu_name} · ${hw.logical_cores} threads · ${hw.gpu ? hw.gpu.name : "no GPU detected"} · ${hw.ram_available_gb} GiB RAM free now. ` +
+      (hw.bandwidth_source === "assumed" ? "Memory bandwidth can't be measured automatically here; pick your memory type for a better estimate." : "");
+    const sel = $("#pl-model"); sel.replaceChildren();
+    for (const m of presets) sel.append(el("option", { value: m.id, text: m.name }));
+    sel.append(el("option", { value: "__custom", text: "Custom model…" }));
+    sel.value = store.get("plmodel", "gemma-3-27b");
+  } catch (e) { $("#pl-result").replaceChildren(el("div", { class: "card", text: "Planner unavailable: " + e.message })); }
+}
+$("#hw-bw-preset").onchange = (e) => { if (e.target.value) { $("#hw-bw").value = e.target.value; $("#hw-unified").value = +e.target.value >= 100 ? "1" : "0"; } runPlan(); };
+$("#hw-gpu-preset").onchange = (e) => { const [, v, b] = (e.target.value || "|0|0").split("|"); $("#hw-vram").value = v; $("#hw-gbw").value = b; runPlan(); };
+$("#pl-model").onchange = (e) => { store.set("plmodel", e.target.value); $("#pl-custom").style.display = e.target.value === "__custom" ? "flex" : "none"; runPlan(); };
+["#hw-ram", "#hw-cores", "#hw-bw", "#hw-unified", "#hw-vram", "#hw-gbw", "#pl-ctx", "#pl-target"].forEach((s) => $(s).addEventListener("change", runPlan));
+$("#pl-go").onclick = runPlan;
+
+function hwFromForm() {
+  const ram = +$("#hw-ram").value || 16, bw = +$("#hw-bw").value || 60, unified = $("#hw-unified").value === "1";
+  const vram = +$("#hw-vram").value || 0, gbw = +$("#hw-gbw").value || 0;
+  let gpu = null;
+  if (unified) gpu = { name: "Unified memory GPU", vram_gb: Math.round(ram * 0.75 * 10) / 10, bandwidth_gbs: bw };
+  else if (vram > 0 && gbw > 0) gpu = { name: $("#hw-gpu-preset").selectedOptions[0]?.text || "GPU", vram_gb: vram, bandwidth_gbs: gbw };
+  return Object.assign({}, detected || {}, {
+    os: detected?.os || "unknown", cpu_name: detected?.cpu_name || "CPU", logical_cores: detected?.logical_cores || 8,
+    physical_cores: +$("#hw-cores").value || 4, ram_gb: ram, ram_available_gb: detected?.ram_available_gb || ram,
+    cpu_bandwidth_gbs: bw, gpu, unified_memory: unified, bandwidth_source: detected?.bandwidth_source || "assumed",
+  });
+}
+
+function copyBlock(title, text) {
+  const btn = el("button", { class: "btn ghost sm", text: "Copy", onclick: async () => { try { await navigator.clipboard.writeText(text); btn.textContent = "Copied"; setTimeout(() => btn.textContent = "Copy", 1500); } catch { btn.textContent = "Select & copy"; } } });
+  return el("div", { class: "cmd" }, el("strong", { text: title }), btn, el("pre", { text }));
+}
+
+async function runPlan() {
+  if (!presets.length) return;
+  planned = true;
+  const id = $("#pl-model").value;
+  const req = { hardware: hwFromForm(), ctx: +$("#pl-ctx").value, target_tps: +$("#pl-target").value || 20 };
+  if (id === "__custom") req.custom = { id: "custom", name: "Custom model", total_b: +$("#c-total").value, active_b: +$("#c-active").value, layers: +$("#c-layers").value, kv_bytes_per_token: +$("#c-kv").value };
+  else req.model = id;
+  const out = $("#pl-result");
+  let p;
+  try { p = await api("/llmo/plan", { json: req }); } catch (e) { out.replaceChildren(el("div", { class: "verdict bad", text: e.message })); return; }
+  const rec = p.recommended;
+  const cls = !rec ? "bad" : p.meets_target ? "ok" : "warn";
+  const head = !rec ? "Won't fit" : p.meets_target ? `Yes: ${rec.quant}, ~${rec.est_tps.toFixed(0)} tok/s` : `Runs, but ~${rec.est_tps.toFixed(1)} tok/s (target ${p.target_tps})`;
+  const nodes = [el("div", { class: "verdict " + cls }, el("b", { text: head }), el("span", { text: p.verdict }))];
+
+  const maxT = Math.max(p.target_tps * 1.25, ...p.options.filter((o) => o.fits).map((o) => o.est_tps));
+  const rows = p.options.map((o) => {
+    const pct = Math.min(100, (o.est_tps / maxT) * 100), tpct = Math.min(100, (p.target_tps / maxT) * 100);
+    const isRec = rec && rec.quant === o.quant;
+    return el("tr", { class: isRec ? "rec" : o.fits ? "" : "nofit" },
+      el("td", {}, el("strong", { text: o.quant }), isRec ? el("div", {}, el("span", { class: "chip ok", text: "recommended" })) : null),
+      el("td", { text: o.quality }),
+      el("td", { class: "mono", text: `${o.weights_gib.toFixed(1)} GiB` }),
+      el("td", { class: "mono", text: o.vram_gib ? `${o.ram_gib.toFixed(1)} + ${o.vram_gib.toFixed(1)} VRAM` : `${o.ram_gib.toFixed(1)}` }),
+      el("td", {}, el("span", { class: "chip " + (o.fits ? "ok" : "bad"), text: o.fits ? (o.gpu_layers ? `fits · ${o.gpu_layers} GPU layers` : "fits") : "too big" })),
+      el("td", {}, o.fits ? el("div", {}, el("div", { class: "mono", text: `${o.est_tps.toFixed(1)} tok/s` + (o.est_tps_draft ? `  (${o.est_tps_draft[0].toFixed(0)}–${o.est_tps_draft[1].toFixed(0)} w/ draft)` : "") }),
+        el("div", { class: "bar", title: "dashed line = target" }, Object.assign(el("i", { class: o.meets_target ? "ok" : "" }), { style: `width:${pct}%` }), Object.assign(el("s"), { style: `left:${tpct}%` }))) : el("span", { class: "muted", text: "—" })));
+  });
+  nodes.push(el("div", { class: "card tbl-wrap" }, el("table", {},
+    el("thead", {}, el("tr", {}, ...["Quant", "Quality", "Weights", "Needs (GiB)", "Fit", "Speed"].map((h) => el("th", { text: h })))),
+    el("tbody", {}, ...rows))));
+
+  if (p.command) {
+    const c = el("div", { class: "card stack" },
+      el("div", { class: "explain", text: "Install llama.cpp (brew install llama.cpp, winget install llama.cpp, or a release build), then run the command. The first run downloads the model; after that everything is offline. Or paste the config block into llmo's config.toml so llmo starts and stops it for you." }),
+      copyBlock("1 · Run with llama.cpp", p.command));
+    if (p.command_speculative) c.append(copyBlock("Faster: speculative decoding with a small draft model", p.command_speculative));
+    c.append(copyBlock("2 · Or let llmo manage it (add to config.toml)", p.llmo_config));
+    nodes.push(c);
+  }
+  if (p.alternatives.length) {
+    const list = el("div", { class: "stack" });
+    for (const a of p.alternatives.slice(0, 5)) {
+      list.append(el("div", { class: "row", style: "justify-content:space-between;align-items:center" },
+        el("div", {}, el("strong", { text: a.name }), el("span", { class: "muted", text: `  ${a.quant} · ${a.ram_gib.toFixed(1)} GiB` })),
+        el("div", { class: "row", style: "align-items:center" },
+          el("span", { class: "chip " + (a.meets_target ? "ok" : ""), text: `~${a.est_tps.toFixed(0)} tok/s` }),
+          el("button", { class: "btn ghost sm", text: "Plan this", onclick: () => { $("#pl-model").value = a.model; store.set("plmodel", a.model); runPlan(); window.scrollTo({ top: 0, behavior: "smooth" }); } }))));
+    }
+    nodes.push(el("div", { class: "card" }, el("strong", { text: "What runs at your target on this machine" }), el("div", { style: "margin-top:10px" }, list)));
+  }
+  out.replaceChildren(...nodes);
+}
+
+// ---------- boot ----------
+async function boot() {
+  health(); setInterval(health, 10000);
+  await Promise.all([loadModels(), loadPlanner()]);
+  show(store.get("tab", "chat"));
+}
+boot();
+</script>
+</body>
+</html>

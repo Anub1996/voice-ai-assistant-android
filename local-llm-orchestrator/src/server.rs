@@ -61,7 +61,11 @@ pub fn router(state: AppState) -> Router {
         .route("/llmo/memory/stats", get(memory_stats))
         .route("/llmo/memory/reindex", post(reindex_memory))
         .route("/llmo/memory/{id}", get(get_memory).delete(delete_memory))
+        .route("/llmo/hardware", get(hardware))
+        .route("/llmo/plan", post(plan))
+        .route("/llmo/plan/presets", get(presets))
         .layer(middleware::from_fn_with_state(state.clone(), auth))
+        .route("/", get(ui))
         .route("/health", get(|| async { Json(json!({ "status": "ok" })) }))
         .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
         .with_state(state)
@@ -361,6 +365,49 @@ async fn delete_memory(
     } else {
         Err(Error::NotFound(format!("memory `{id}`")))
     }
+}
+
+// ---------------------------------------------------------------- UI & planner
+
+const UI_HTML: &str = include_str!("ui.html");
+
+/// The bundled web UI. Self-contained: the CSP forbids loading anything from
+/// other origins, so the page cannot phone home.
+async fn ui() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; \
+                 img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+            ),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::REFERRER_POLICY, "no-referrer"),
+        ],
+        UI_HTML,
+    )
+        .into_response()
+}
+
+async fn hardware() -> Result<Json<crate::hardware::Hardware>> {
+    let hw = tokio::task::spawn_blocking(crate::hardware::detect)
+        .await
+        .map_err(|e| Error::Internal(e.into()))?;
+    Ok(Json(hw))
+}
+
+async fn presets() -> Json<Value> {
+    Json(json!({ "models": crate::planner::presets(), "quants": crate::planner::QUANTS }))
+}
+
+async fn plan(Json(req): Json<crate::planner::PlanRequest>) -> Result<Json<crate::planner::Plan>> {
+    let p =
+        tokio::task::spawn_blocking(move || crate::planner::plan(&req, crate::hardware::detect))
+            .await
+            .map_err(|e| Error::Internal(e.into()))?
+            .map_err(Error::BadRequest)?;
+    Ok(Json(p))
 }
 
 /// Run the server until Ctrl-C / SIGTERM, then stop managed runtimes.

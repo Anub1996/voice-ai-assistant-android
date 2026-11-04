@@ -191,6 +191,7 @@ pub async fn store_turn(
     if !opts.store {
         return 0;
     }
+    let assistant_text = assistant_text.filter(|_| memory.cfg.store_assistant);
     let turns = [("user", user_text), ("assistant", assistant_text)]
         .into_iter()
         .filter_map(|(role, t)| t.map(|t| (role, t)))

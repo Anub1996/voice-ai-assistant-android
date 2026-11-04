@@ -72,6 +72,10 @@ pub struct MemoryConfig {
     /// Scrub emails, API keys and similar secrets before anything is stored.
     #[serde(default = "default_true")]
     pub redact: bool,
+    /// Also store assistant replies. Off by default: replies tend to restate
+    /// recalled memories, which then get recalled again and snowball.
+    #[serde(default)]
+    pub store_assistant: bool,
 }
 
 impl Default for MemoryConfig {
@@ -84,6 +88,7 @@ impl Default for MemoryConfig {
             max_context_chars: default_max_context_chars(),
             recency_half_life_days: default_recency_half_life(),
             redact: true,
+            store_assistant: false,
         }
     }
 }
