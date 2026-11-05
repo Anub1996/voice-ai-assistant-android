@@ -132,6 +132,17 @@ configured.
   namespace. Encryption at rest is delegated to the disk (BitLocker,
   FileVault, LUKS).
 
+## Engines
+
+- **Built-in engine:** compiled into llmo and run as a separate
+  `llmo run-model` process per model. A crash or out-of-memory in one model
+  can't take llmo down. It's CPU-only, uses `engine.threads` threads, and
+  needs nothing else on disk, so it suits locked-down and air-gapped
+  machines.
+- **llama.cpp:** optional. It's used when `engine.runner = "llama.cpp"`,
+  for model families the built-in engine doesn't support, or under `auto`
+  when a GPU is present and llama.cpp is installed.
+
 ## Built-in model runner
 
 llmo can download GGUF models from Hugging Face and run them with a

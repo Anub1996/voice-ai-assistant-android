@@ -15,6 +15,7 @@ pub mod gguf;
 pub mod hardware;
 pub mod hub;
 pub mod jobs;
+pub mod lite;
 pub mod memory;
 pub mod metrics;
 pub mod models;

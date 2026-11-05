@@ -44,6 +44,49 @@ your machine:
   in-process with no model download, and emails/API keys/tokens/private keys
   are scrubbed before anything is written to disk.
 
+## Built-in engine for low-spec PCs
+
+llmo has its own inference engine, written in Rust and compiled into the
+same ~20 MB binary. It runs small quantized GGUF models on the CPU: no
+llama.cpp, Ollama, Python or GPU needed, and nothing extra to download.
+
+- **Model families:** Llama (incl. SmolLM2, TinyLlama, Llama 3.x), Mistral,
+  Qwen 2 / 2.5 / 3, Gemma 3, Phi-3. Other families (e.g.
+  mixture-of-experts) use llama.cpp automatically.
+- **Built for weak hardware:**
+  - Quantized weights *and* embeddings stay quantized in RAM.
+  - AVX2/FMA kernels are picked at run time, so one binary also runs on old
+    CPUs.
+  - Multi-turn chats reuse the KV cache, so only the new message is
+    processed.
+  - Context shrinks automatically to fit small RAM.
+- **Correctness:** logits match an independent numpy implementation of
+  llama.cpp's conventions for Llama, Qwen2 and Qwen3. Prefix caching is
+  checked against full recomputation, including Gemma 3 past its sliding
+  window. Two upstream Gemma 3 attention-mask bugs are fixed.
+
+Measured on a 4-core x86 VM (no GPU, 27 GB/s memory bandwidth) with
+real-shape models:
+
+| Model | File | Generation | Peak RAM |
+|---|---|---|---|
+| SmolLM2-135M Q8_0 | 144 MB | ~44 tok/s | ~230 MB |
+| Qwen2.5-0.5B Q4_0 | 282 MB | ~23 tok/s | ~460 MB |
+| Qwen3-0.6B Q4_K | 339 MB | ~26 tok/s | ~1.0 GB |
+| Llama-3.2-1B Q4_K | 698 MB | ~14 tok/s | ~1.8 GB |
+| Qwen2.5-1.5B Q4_K | 872 MB | ~12 tok/s | ~2.1 GB |
+
+On 2 threads, SmolLM2-135M does ~29 tok/s and Qwen3-0.6B ~18 tok/s.
+Reproduce with `cargo run --release --example lite_bench`.
+
+`engine.runner` picks the engine:
+- `auto` (default) uses the built-in engine, unless a GPU is present *and*
+  llama.cpp is installed (which is faster there), or the model needs
+  llama.cpp.
+- `builtin` or `llama.cpp` forces one.
+
+`engine.threads` sets the CPU threads (default: physical cores).
+
 ## Run Hugging Face models with nothing else installed
 
 Open the **Models** tab:
@@ -52,10 +95,10 @@ Open the **Models** tab:
    a file. Each file shows whether it fits your RAM/VRAM and its estimated
    speed on your hardware.
 2. Click **Download & run**. llmo downloads the GGUF (resumable, verified
-   against Hugging Face's SHA-256), then on first use downloads the official
-   **llama.cpp** engine build for your machine (CUDA for NVIDIA on Windows,
-   Metal on Apple Silicon, Vulkan or CPU elsewhere, verified against
-   GitHub's SHA-256) and starts it.
+   against Hugging Face's SHA-256) and runs it on its built-in engine.
+   Only for GPU acceleration or unsupported model families does it fetch
+   the official **llama.cpp** build for your machine (CUDA, Metal, Vulkan
+   or CPU, verified against GitHub's SHA-256).
 3. Chat. The model appears in the Chat model list and in `/v1/models` for
    any OpenAI client. It stops when idle and starts again on demand.
 

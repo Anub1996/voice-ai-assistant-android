@@ -102,6 +102,24 @@ enum Cmd {
     /// The built-in llama.cpp engine.
     #[command(subcommand)]
     Engine(EngineCmd),
+    /// Serve one GGUF model with the built-in Rust engine (llmo runs this
+    /// itself for downloaded models).
+    #[command(hide = true)]
+    RunModel {
+        #[arg(long)]
+        model: PathBuf,
+        #[arg(long)]
+        alias: String,
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long)]
+        port: u16,
+        #[arg(long, default_value_t = 4096)]
+        ctx: usize,
+        /// CPU threads (0 = physical cores).
+        #[arg(long, default_value_t = 0)]
+        threads: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -226,6 +244,10 @@ fn main() -> std::process::ExitCode {
     llmo::net::init_tls();
     let cli = Cli::parse();
     init_logging(&cli.log_format);
+    if let Some(Cmd::RunModel { threads, .. }) = &cli.cmd {
+        // Before the async runtime starts any threads.
+        llmo::lite::set_threads(*threads);
+    }
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -262,6 +284,29 @@ async fn run(cli: Cli, double_clicked: bool) -> Result<()> {
         bind: None,
         open: double_clicked,
     });
+
+    if let Cmd::RunModel {
+        model,
+        alias,
+        host,
+        port,
+        ctx,
+        ..
+    } = cmd
+    {
+        let t = std::time::Instant::now();
+        let m = model.clone();
+        let engine =
+            tokio::task::spawn_blocking(move || llmo::lite::Engine::load(&m, ctx)).await??;
+        tracing::info!(
+            model = %model.display(),
+            arch = %engine.arch,
+            ctx = engine.ctx,
+            secs = t.elapsed().as_secs_f32(),
+            "model loaded"
+        );
+        return llmo::lite::server::serve(engine, alias, &host, port).await;
+    }
 
     match &cmd {
         Cmd::Hardware => {
@@ -329,7 +374,8 @@ async fn run(cli: Cli, double_clicked: bool) -> Result<()> {
         | Cmd::Hardware
         | Cmd::Plan { .. }
         | Cmd::Key(_)
-        | Cmd::Healthcheck { .. } => {
+        | Cmd::Healthcheck { .. }
+        | Cmd::RunModel { .. } => {
             unreachable!()
         }
         Cmd::Serve { bind, open } => {

@@ -59,7 +59,40 @@ pub fn detect() -> Hardware {
     if !hw.unified_memory {
         hw.gpu = nvidia();
     }
+    // Apple chips use their published unified-memory bandwidth; elsewhere
+    // measure it (~50 ms) rather than guessing.
+    if hw.bandwidth_source != "detected"
+        && let Some(bw) = measure_bandwidth_gbs(hw.logical_cores)
+    {
+        hw.cpu_bandwidth_gbs = (bw * 10.0).round() / 10.0;
+        hw.bandwidth_source = "measured".into();
+    }
     hw
+}
+
+/// Multi-threaded sequential read bandwidth over a 128 MiB buffer (larger
+/// than any CPU cache), best of three passes, in GB/s.
+pub fn measure_bandwidth_gbs(threads: usize) -> Option<f64> {
+    const WORDS: usize = 128 * 1024 * 1024 / 8;
+    let buf: Vec<u64> = (0..WORDS as u64).collect(); // touches every page
+    let threads = threads.clamp(1, 64);
+    let chunk = WORDS.div_ceil(threads);
+    let mut best = 0f64;
+    for _ in 0..3 {
+        let t = std::time::Instant::now();
+        let total: u64 = std::thread::scope(|sc| {
+            let hs: Vec<_> = buf
+                .chunks(chunk)
+                .map(|c| sc.spawn(move || c.iter().fold(0u64, |a, x| a.wrapping_add(*x))))
+                .collect();
+            hs.into_iter()
+                .map(|h| h.join().unwrap_or(0))
+                .fold(0u64, u64::wrapping_add)
+        });
+        std::hint::black_box(total);
+        best = best.max((WORDS * 8) as f64 / t.elapsed().as_secs_f64() / 1e9);
+    }
+    (3.0..2000.0).contains(&best).then_some(best)
 }
 
 #[cfg(target_os = "linux")]
@@ -279,5 +312,7 @@ mod tests {
         let hw = detect();
         assert!(hw.ram_gb > 0.0);
         assert!(hw.physical_cores >= 1);
+        assert!(hw.cpu_bandwidth_gbs >= 3.0);
+        assert!(["measured", "detected", "assumed"].contains(&hw.bandwidth_source.as_str()));
     }
 }

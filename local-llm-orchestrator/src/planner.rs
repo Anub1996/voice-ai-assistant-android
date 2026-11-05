@@ -48,6 +48,9 @@ pub struct ModelSpec {
     pub hf_repo: Option<String>,
     #[serde(default)]
     pub draft: Option<Draft>,
+    /// GGUF `general.architecture`, to know which engine can run it.
+    #[serde(default)]
+    pub arch: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -86,6 +89,7 @@ pub fn presets() -> Vec<ModelSpec> {
             kv_bytes_per_token: kvb,
             hf_repo: Some(repo.into()),
             draft,
+            arch: None,
         }
     };
     let draft = |name: &str, repo: &str, size| {
@@ -156,7 +160,118 @@ pub fn presets() -> Vec<ModelSpec> {
             "unsloth/Qwen3-8B-GGUF",
             draft("Qwen3 0.6B", "unsloth/Qwen3-0.6B-GGUF", 0.5),
         ),
+        // Small models for low-spec PCs (run well on the built-in engine).
+        m(
+            "qwen2.5-1.5b",
+            "Qwen2.5 1.5B",
+            1.54,
+            1.54,
+            28,
+            kv(28, 2, 128),
+            "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+            None,
+        ),
+        m(
+            "llama-3.2-1b",
+            "Llama 3.2 1B",
+            1.24,
+            1.24,
+            16,
+            kv(16, 8, 64),
+            "bartowski/Llama-3.2-1B-Instruct-GGUF",
+            None,
+        ),
+        m(
+            "qwen3-0.6b",
+            "Qwen3 0.6B (small)",
+            0.6,
+            0.6,
+            28,
+            kv(28, 8, 128),
+            "unsloth/Qwen3-0.6B-GGUF",
+            None,
+        ),
+        m(
+            "qwen2.5-0.5b",
+            "Qwen2.5 0.5B (small)",
+            0.49,
+            0.49,
+            24,
+            kv(24, 2, 64),
+            "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+            None,
+        ),
+        m(
+            "smollm2-360m",
+            "SmolLM2 360M (tiny)",
+            0.36,
+            0.36,
+            32,
+            kv(32, 5, 64),
+            "bartowski/SmolLM2-360M-Instruct-GGUF",
+            None,
+        ),
+        m(
+            "gemma-3-270m",
+            "Gemma 3 270M (tiny)",
+            0.27,
+            0.27,
+            18,
+            kv(18, 1, 256),
+            "unsloth/gemma-3-270m-it-GGUF",
+            None,
+        ),
+        m(
+            "smollm2-135m",
+            "SmolLM2 135M (tiny)",
+            0.135,
+            0.135,
+            30,
+            kv(30, 3, 64),
+            "bartowski/SmolLM2-135M-Instruct-GGUF",
+            None,
+        ),
     ]
+    .into_iter()
+    .map(|mut p| {
+        p.arch = Some(preset_arch(&p.id).to_string());
+        p
+    })
+    .collect()
+}
+
+fn preset_arch(id: &str) -> &'static str {
+    match id {
+        x if x.starts_with("gemma-3") => "gemma3",
+        x if x.starts_with("qwen3-30b") => "qwen3moe",
+        x if x.starts_with("qwen3") => "qwen3",
+        x if x.starts_with("qwen2.5") => "qwen2",
+        _ => "llama", // Llama, Mistral, SmolLM2
+    }
+}
+
+/// Built-in Rust engine speed model, fitted to measurements on a 4-core
+/// x86 CPU: a fixed per-token cost plus streaming the weights at ~45% of
+/// memory bandwidth (llama.cpp reaches ~60%).
+pub const BUILTIN_EFF: f64 = 0.45;
+pub const BUILTIN_TOKEN_OVERHEAD_S: f64 = 0.010;
+
+pub fn builtin_tps(active_bytes: f64, cpu_bandwidth_gbs: f64) -> f64 {
+    1.0 / (BUILTIN_TOKEN_OVERHEAD_S + active_bytes / (BUILTIN_EFF * cpu_bandwidth_gbs * 1e9))
+}
+
+/// RAM the built-in engine needs: K-quant files are repacked for fast
+/// kernels (~2x weights), others ~1.1x, plus an f32 KV cache for the
+/// whole context and runtime overhead.
+pub fn builtin_ram_gib(
+    file_bytes: u64,
+    kquant: bool,
+    kv_bytes_per_token_f16: f64,
+    ctx: u32,
+) -> f64 {
+    let w = file_bytes as f64 * if kquant { 1.9 } else { 1.1 };
+    let kv = kv_bytes_per_token_f16 * 2.0 * ctx as f64;
+    (w + kv) / GIB + 0.15
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -441,6 +556,13 @@ pub struct FileEstimate {
     pub meets_target: bool,
     /// `exact` (from the file's header) or `approximate` (from its name/size).
     pub basis: &'static str,
+    /// Context length (tokens) the estimate assumes.
+    pub ctx: u32,
+}
+
+/// f16 KV-cache bytes per token when the model geometry is unknown.
+pub fn approx_kv_bytes_per_token(params_b: f64) -> f64 {
+    params_b * KV_GIB_PER_B_4K * GIB / 4096.0 * 2.0
 }
 
 /// Unknown geometry: assume ~0.035 GiB of q8 KV cache per billion
@@ -484,6 +606,7 @@ pub fn estimate_file(
         est_tps,
         meets_target: p.fits && est_tps >= target,
         basis: if exact { "exact" } else { "approximate" },
+        ctx,
     }
 }
 

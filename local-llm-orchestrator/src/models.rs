@@ -1,7 +1,8 @@
 //! Built-in model runner: ties together the Hugging Face client, the
-//! llama.cpp engine, the local model registry, background jobs and the
-//! runtime manager. A downloaded model becomes a managed runtime named after
-//! its id, so it shows up in `/v1/models` and starts on first use.
+//! engines (the built-in Rust engine and llama.cpp), the local model
+//! registry, background jobs and the runtime manager. A downloaded model
+//! becomes a managed runtime named after its id, so it shows up in
+//! `/v1/models` and starts on first use.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
@@ -30,6 +31,30 @@ pub struct ModelService {
 
 static HW: OnceLock<Hardware> = OnceLock::new();
 
+/// Which engine runs a downloaded model.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Runner {
+    /// llmo's own Rust engine (`llmo run-model`): nothing to download.
+    Builtin,
+    /// llama.cpp's `llama-server`: faster, GPU offload, all architectures.
+    LlamaCpp,
+}
+
+/// The `llmo` executable that serves built-in models (`LLMO_EXE` overrides,
+/// e.g. in tests).
+pub fn llmo_exe() -> String {
+    std::env::var_os("LLMO_EXE")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::current_exe().ok())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "llmo".into())
+}
+
+fn round1(x: f64) -> f64 {
+    (x * 10.0).round() / 10.0
+}
+
 /// Detected hardware, cached for the process lifetime.
 pub fn hardware() -> Hardware {
     HW.get_or_init(crate::hardware::detect).clone()
@@ -41,6 +66,7 @@ pub struct LocalModelView {
     pub model: LocalModel,
     pub name: String,
     pub status: Status,
+    pub runner: Runner,
     pub estimate: FileEstimate,
 }
 
@@ -48,6 +74,7 @@ pub struct LocalModelView {
 pub struct ChoiceView {
     #[serde(flatten)]
     pub choice: Choice,
+    pub runner: Runner,
     pub estimate: FileEstimate,
     pub downloaded: bool,
     pub local_id: String,
@@ -88,11 +115,8 @@ impl ModelService {
     /// Register a runtime for every downloaded model (call at start-up and
     /// after installing the engine).
     pub async fn sync_runtimes(&self) {
-        let Some(server) = self.engine.installed() else {
-            return;
-        };
         for m in self.local.list() {
-            if let Err(e) = self.register(&m, &server).await {
+            if let Err(e) = self.register(&m).await {
                 tracing::warn!(model = %m.id, error = %e, "could not register model runtime");
             }
         }
@@ -117,6 +141,70 @@ impl ModelService {
         )
     }
 
+    /// `auto`: the built-in engine for supported models, unless a GPU is
+    /// present and llama.cpp is installed (it can offload to the GPU).
+    pub fn runner_for_arch(&self, arch: Option<&str>) -> Runner {
+        let supported = arch.is_some_and(crate::lite::supported);
+        match self.cfg.runner.as_str() {
+            "llama.cpp" => Runner::LlamaCpp,
+            _ if !supported => Runner::LlamaCpp,
+            "builtin" => Runner::Builtin,
+            _ => {
+                let hw = hardware();
+                let gpu = hw.unified_memory || hw.gpu.is_some();
+                if gpu && self.engine.installed().is_some() {
+                    Runner::LlamaCpp
+                } else {
+                    Runner::Builtin
+                }
+            }
+        }
+    }
+
+    pub fn runner_for(&self, m: &LocalModel) -> Runner {
+        self.runner_for_arch(m.info.as_ref().and_then(|i| i.architecture.as_deref()))
+    }
+
+    /// Built-in engine estimate (CPU only). The context shrinks (down to
+    /// 1024 tokens) until the model fits in RAM, so small PCs still run it.
+    #[allow(clippy::too_many_arguments)]
+    fn builtin_estimate(
+        &self,
+        size: u64,
+        active: f64,
+        quant: Option<&str>,
+        kv_bytes: Option<f64>,
+        params_b: Option<f64>,
+        layers: Option<u32>,
+        exact: bool,
+    ) -> FileEstimate {
+        let hw = hardware();
+        let kquant = quant.is_some_and(|q| q.contains("_K"));
+        let kvb = kv_bytes.unwrap_or_else(|| {
+            planner::approx_kv_bytes_per_token(params_b.unwrap_or(size as f64 * 2.0 / 1e9))
+        });
+        let usable = hw.ram_gb - planner::OS_RESERVE_GIB;
+        let mut ctx = self.cfg.ctx;
+        while ctx > 1024 && planner::builtin_ram_gib(size, kquant, kvb, ctx) > usable {
+            ctx /= 2;
+        }
+        let ram = planner::builtin_ram_gib(size, kquant, kvb, ctx);
+        let tps = planner::builtin_tps(size as f64 * active.clamp(0.01, 1.0), hw.cpu_bandwidth_gbs);
+        let fits = ram <= usable;
+        FileEstimate {
+            fits,
+            gpu_layers: 0,
+            layers: layers.unwrap_or(0),
+            ram_gib: round1(ram),
+            vram_gib: 0.0,
+            kv_gib: (kvb * 2.0 * ctx as f64 / 1_073_741_824.0 * 100.0).round() / 100.0,
+            est_tps: round1(tps),
+            meets_target: fits && tps >= self.target_tps,
+            basis: if exact { "exact" } else { "approximate" },
+            ctx,
+        }
+    }
+
     pub fn estimate_local(&self, m: &LocalModel) -> FileEstimate {
         let active = m
             .info
@@ -124,10 +212,54 @@ impl ModelService {
             .map(|i| i.active_fraction())
             .unwrap_or_else(|| active_hint(&m.repo));
         let params = m.info.as_ref().map(|i| i.total_params as f64 / 1e9);
-        self.estimate_for(m.size, active, m.info.as_ref(), params)
+        match self.runner_for(m) {
+            Runner::Builtin => {
+                let info = m.info.as_ref();
+                self.builtin_estimate(
+                    m.size,
+                    active,
+                    m.quant.as_deref(),
+                    info.and_then(|i| i.kv_bytes_per_token()),
+                    params,
+                    info.and_then(|i| i.block_count).map(|b| b as u32),
+                    info.is_some_and(|i| i.kv_bytes_per_token().is_some()),
+                )
+            }
+            Runner::LlamaCpp => self.estimate_for(m.size, active, m.info.as_ref(), params),
+        }
     }
 
-    fn runtime_config(&self, m: &LocalModel, server: &Installed) -> RuntimeConfig {
+    fn builtin_config(&self, m: &LocalModel) -> RuntimeConfig {
+        let est = self.estimate_local(m);
+        RuntimeConfig {
+            name: m.id.clone(),
+            base_url: "http://127.0.0.1:0".into(),
+            models: vec![m.id.clone()],
+            process: Some(ProcessConfig {
+                command: llmo_exe(),
+                args: vec![
+                    "run-model".into(),
+                    "--model".into(),
+                    m.main_path().to_string_lossy().into_owned(),
+                    "--alias".into(),
+                    m.id.clone(),
+                    "--port".into(),
+                    "{port}".into(),
+                    "--ctx".into(),
+                    est.ctx.to_string(),
+                    "--threads".into(),
+                    self.cfg.threads.to_string(),
+                ],
+                env: BTreeMap::new(),
+                memory_mb: (est.ram_gib * 1024.0).ceil() as u64,
+                idle_timeout_secs: self.cfg.idle_timeout_secs,
+            }),
+            startup_timeout_secs: 300,
+            auto_port: true,
+        }
+    }
+
+    fn llama_config(&self, m: &LocalModel, server: &Installed) -> RuntimeConfig {
         let est = self.estimate_local(m);
         let hw = hardware();
         let cpu_only = server.backend == "cpu" || (hw.gpu.is_none() && !hw.unified_memory);
@@ -180,16 +312,22 @@ impl ModelService {
         }
     }
 
-    async fn register(&self, m: &LocalModel, server: &Installed) -> crate::error::Result<()> {
+    /// Register (or refresh) the runtime for a downloaded model. Models that
+    /// need llama.cpp are skipped until it is installed.
+    async fn register(&self, m: &LocalModel) -> crate::error::Result<()> {
         if let Some(rt) = self.runtimes.get(&m.id)
             && matches!(rt.status(), Status::Running | Status::Starting)
         {
             return Ok(()); // keep a live runtime as is
         }
-        self.runtimes
-            .register(self.runtime_config(m, server))
-            .await
-            .map(|_| ())
+        let cfg = match self.runner_for(m) {
+            Runner::Builtin => self.builtin_config(m),
+            Runner::LlamaCpp => match self.engine.installed() {
+                Some(server) => self.llama_config(m, &server),
+                None => return Ok(()),
+            },
+        };
+        self.runtimes.register(cfg).await.map(|_| ())
     }
 
     pub fn list_local(&self) -> Vec<LocalModelView> {
@@ -203,6 +341,7 @@ impl ModelService {
                     .get(&m.id)
                     .map(|r| r.status())
                     .unwrap_or(Status::Stopped),
+                runner: self.runner_for(&m),
                 estimate: self.estimate_local(&m),
                 model: m,
             })
@@ -220,14 +359,28 @@ impl ModelService {
             .map(|t| t as f64 / 1e9)
             .or_else(|| crate::hub::parse_param_hint(&info.id).map(|h| h.0));
         let active = active_hint(&info.id);
+        let runner = self.runner_for_arch(info.architecture.as_deref());
         let local: Vec<String> = self.local.list().into_iter().map(|m| m.id).collect();
         let choices: Vec<ChoiceView> = info
             .choices
             .iter()
             .map(|c| {
                 let id = crate::hub::local_id(&info.id, &c.id);
+                let estimate = match runner {
+                    Runner::Builtin => self.builtin_estimate(
+                        c.size,
+                        active,
+                        c.quant.as_deref(),
+                        None,
+                        params_b,
+                        None,
+                        false,
+                    ),
+                    Runner::LlamaCpp => self.estimate_for(c.size, active, None, params_b),
+                };
                 ChoiceView {
-                    estimate: self.estimate_for(c.size, active, None, params_b),
+                    runner,
+                    estimate,
                     downloaded: local.contains(&id),
                     local_id: id,
                     choice: c.clone(),
@@ -337,9 +490,7 @@ impl ModelService {
                 move || me.local.register(&repo, &pick, &paths)
             })
             .await??;
-            if let Some(server) = me.engine.installed() {
-                me.register(&m, &server).await?;
-            }
+            me.register(&m).await?;
             if run {
                 me.run_inner(&m, &job).await?;
             }
@@ -348,8 +499,10 @@ impl ModelService {
     }
 
     async fn run_inner(self: &Arc<Self>, m: &LocalModel, job: &Job) -> Result<()> {
-        let server = self.ensure_engine(job).await?;
-        self.register(m, &server).await?;
+        if self.runner_for(m) == Runner::LlamaCpp {
+            self.ensure_engine(job).await?;
+        }
+        self.register(m).await?;
         let rt = self.runtimes.get(&m.id).context("runtime missing")?;
         job.stage("loading the model");
         self.runtimes.ensure_running(&rt).await?;
@@ -405,10 +558,30 @@ impl ModelService {
                 };
                 let p = planner::plan(&req, || hw.clone()).ok()?;
                 let r = p.recommended?;
+                let runner = self.runner_for_arch(m.arch.as_deref());
+                let (est_tps, meets, ram) = match runner {
+                    Runner::Builtin => {
+                        let size = (r.weights_gib * 1_073_741_824.0) as u64;
+                        let e = self.builtin_estimate(
+                            size,
+                            m.active_b / m.total_b,
+                            Some(r.quant),
+                            Some(m.kv_bytes_per_token),
+                            Some(m.total_b),
+                            Some(m.layers),
+                            true,
+                        );
+                        if !e.fits {
+                            return None;
+                        }
+                        (e.est_tps, e.meets_target, e.ram_gib)
+                    }
+                    Runner::LlamaCpp => (r.est_tps, r.meets_target, r.ram_gib.max(r.vram_gib)),
+                };
                 Some(json!({
                     "preset": m.id, "name": m.name, "repo": repo, "quant": r.quant,
-                    "size_gib": r.weights_gib, "est_tps": r.est_tps, "meets_target": r.meets_target,
-                    "moe": m.is_moe(),
+                    "size_gib": r.weights_gib, "est_tps": est_tps, "meets_target": meets,
+                    "ram_gib": ram, "params_b": m.total_b, "moe": m.is_moe(), "runner": runner,
                 }))
             })
             .collect()

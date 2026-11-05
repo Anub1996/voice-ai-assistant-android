@@ -18,6 +18,8 @@ use axum::routing::get;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+mod support;
+
 use llmo::config::Config;
 use llmo::memory::MemoryStore;
 use llmo::server::{AppState, router};
@@ -121,6 +123,9 @@ struct Mock {
     fail_first: Arc<AtomicUsize>,
     ranges_seen: Arc<Mutex<Vec<String>>>,
     gated: bool,
+    arch: &'static str,
+    /// How often llmo asked GitHub for llama.cpp releases.
+    gh_hits: Arc<AtomicUsize>,
 }
 
 async fn hf_search() -> Json<Value> {
@@ -130,7 +135,7 @@ async fn hf_search() -> Json<Value> {
 async fn hf_meta(State(m): State<Mock>) -> Json<Value> {
     Json(
         json!({ "id": "acme/Tiny-8B-A1B-GGUF", "gated": if m.gated { json!("manual") } else { json!(false) },
-                 "gguf": { "total": 8_000_000_000u64, "architecture": "qwen3moe" } }),
+                 "gguf": { "total": 8_000_000_000u64, "architecture": m.arch } }),
     )
 }
 
@@ -177,6 +182,7 @@ async fn hf_file(State(m): State<Mock>, Path(file): Path<String>, headers: Heade
 }
 
 async fn gh_release(State(m): State<Mock>) -> Json<Value> {
+    m.gh_hits.fetch_add(1, Ordering::SeqCst);
     let base = m.base.lock().unwrap().clone();
     Json(json!({ "tag_name": "b9999", "assets": [
         { "name": "llama-b9999-bin-ubuntu-vulkan-x64.zip", "browser_download_url": format!("{base}/dl/vulkan.zip"), "size": 1 },
@@ -190,8 +196,16 @@ async fn gh_asset(State(m): State<Mock>) -> Vec<u8> {
 }
 
 async fn spawn_mock(gated: bool, script_dir: &std::path::Path) -> (String, Mock) {
+    spawn_mock_with(gated, script_dir, fake_gguf(), "qwen3moe").await
+}
+
+async fn spawn_mock_with(
+    gated: bool,
+    script_dir: &std::path::Path,
+    model: Vec<u8>,
+    arch: &'static str,
+) -> (String, Mock) {
     llmo::net::init_tls();
-    let model = fake_gguf();
     let engine = engine_zip(script_dir);
     let m = Mock {
         base: Arc::default(),
@@ -202,6 +216,8 @@ async fn spawn_mock(gated: bool, script_dir: &std::path::Path) -> (String, Mock)
         fail_first: Arc::new(AtomicUsize::new(1)),
         ranges_seen: Arc::default(),
         gated,
+        arch,
+        gh_hits: Arc::default(),
     };
     let app = Router::new()
         .route("/api/models", get(hf_search))
@@ -595,4 +611,94 @@ async fn gated_repos_and_permissions() {
     }
     assert_eq!(v["state"], "failed");
     assert!(v["error"].as_str().unwrap().contains("gated"), "{v}");
+}
+
+/// The default path on a CPU-only PC: a supported model downloads and runs
+/// on the built-in Rust engine; llama.cpp is never fetched.
+#[tokio::test]
+async fn builtin_engine_runs_downloaded_model_without_llama_cpp() {
+    let dir = tempfile::tempdir().unwrap();
+    // SAFETY: set before llmo spawns any model process in this test binary.
+    unsafe { std::env::set_var("LLMO_EXE", env!("CARGO_BIN_EXE_llmo")) };
+    let gen_dir = dir.path().join("gen");
+    let path = support::write_model_opts(
+        &gen_dir,
+        support::Spec::small("qwen2"),
+        candle_core::quantized::GgmlDType::Q8_0,
+        4,
+        false,
+    );
+    let (mock, m) =
+        spawn_mock_with(false, dir.path(), std::fs::read(&path).unwrap(), "qwen2").await;
+    m.fail_first.store(0, Ordering::SeqCst);
+    let (llmo, _state) = spawn_llmo(&mock, dir.path(), "").await;
+    let http = reqwest::Client::new();
+
+    let r: Value = http
+        .get(format!("{llmo}/llmo/hub/repo?id=acme/Tiny-8B-A1B-GGUF"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r["choices"][0]["runner"], "builtin", "{r}");
+
+    let j: Value = http
+        .post(format!("{llmo}/llmo/hub/download"))
+        .json(&json!({ "repo": "acme/Tiny-8B-A1B-GGUF", "quant": "Q4_K_M", "run": true }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let done = wait_job(&http, &llmo, j["id"].as_str().unwrap()).await;
+    assert_eq!(done["state"], "completed", "{done}");
+    let id = done["result"]["model"].as_str().unwrap().to_string();
+
+    let l: Value = http
+        .get(format!("{llmo}/llmo/local"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(l["engine_installed"], false, "llama.cpp not needed");
+    assert_eq!(l["models"][0]["runner"], "builtin");
+    assert_eq!(l["models"][0]["status"]["state"], "running");
+    assert_eq!(l["models"][0]["estimate"]["basis"], "exact");
+
+    let c = http
+        .post(format!("{llmo}/v1/chat/completions"))
+        .json(&json!({ "model": id, "max_tokens": 6, "temperature": 0,
+                       "messages": [{ "role": "user", "content": "hello" }] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(c.status(), 200);
+    let c: Value = c.json().await.unwrap();
+    assert!(
+        c["usage"]["completion_tokens"].as_u64().unwrap() >= 1,
+        "{c}"
+    );
+    assert!(c["choices"][0]["message"]["content"].is_string());
+
+    let sse = http
+        .post(format!("{llmo}/v1/chat/completions"))
+        .json(&json!({ "model": id, "max_tokens": 6, "stream": true,
+                       "messages": [{ "role": "user", "content": "again" }] }))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(sse.contains("data: [DONE]"), "{sse}");
+    assert_eq!(
+        m.gh_hits.load(Ordering::SeqCst),
+        0,
+        "never asked GitHub for llama.cpp"
+    );
 }

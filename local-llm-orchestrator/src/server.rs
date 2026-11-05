@@ -583,7 +583,7 @@ async fn ui() -> Response {
 }
 
 async fn hardware() -> Result<Json<crate::hardware::Hardware>> {
-    let hw = tokio::task::spawn_blocking(crate::hardware::detect)
+    let hw = tokio::task::spawn_blocking(crate::models::hardware)
         .await
         .map_err(|e| Error::Internal(e.into()))?;
     Ok(Json(hw))
@@ -595,7 +595,7 @@ async fn presets() -> Json<Value> {
 
 async fn plan(Json(req): Json<crate::planner::PlanRequest>) -> Result<Json<crate::planner::Plan>> {
     let p =
-        tokio::task::spawn_blocking(move || crate::planner::plan(&req, crate::hardware::detect))
+        tokio::task::spawn_blocking(move || crate::planner::plan(&req, crate::models::hardware))
             .await
             .map_err(|e| Error::Internal(e.into()))?
             .map_err(Error::BadRequest)?;
@@ -611,8 +611,14 @@ fn remote(e: anyhow::Error) -> Error {
 async fn engine_status(State(state): State<AppState>) -> Json<Value> {
     let hw = tokio::task::spawn_blocking(crate::models::hardware)
         .await
-        .unwrap_or_else(|_| crate::hardware::detect());
+        .unwrap_or_else(|_| crate::models::hardware());
     Json(json!({
+        "builtin": {
+            "name": "llmo built-in engine (Rust)",
+            "version": env!("CARGO_PKG_VERSION"),
+            "architectures": crate::lite::model::SUPPORTED,
+        },
+        "runner": state.models.cfg.runner,
         "engine": state.models.engine.status(&hw),
         "hardware": hw,
         "ctx": state.models.cfg.ctx,

@@ -38,6 +38,9 @@ pub struct GgufInfo {
     pub total_params: u64,
     /// Elements in routed-expert tensors (`*_exps*`).
     pub expert_params: u64,
+    /// Elements of the token embedding table (`token_embd.weight`).
+    #[serde(default)]
+    pub embedding_params: u64,
 }
 
 impl GgufInfo {
@@ -284,6 +287,9 @@ fn parse<T: Read + Seek>(r: T, info: &mut GgufInfo, keep_meta: bool) -> Result<(
         let _ty = r.u32()?;
         let _offset = r.u64()?;
         info.total_params = info.total_params.saturating_add(elems);
+        if name == "token_embd.weight" {
+            info.embedding_params = elems;
+        }
         if name.contains("_exps") {
             info.expert_params = info.expert_params.saturating_add(elems);
         }

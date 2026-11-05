@@ -67,7 +67,9 @@ hf_endpoint = "https://huggingface.co"   # or an internal mirror; HF_ENDPOINT ov
 github_api = "https://api.github.com"    # where llama.cpp releases are looked up
 llama_cpp_repo = "ggml-org/llama.cpp"
 llama_cpp_version = "latest"             # pin a tag (e.g. "b6550") for reproducibility
-backend = "auto"                         # auto | cpu | cuda | vulkan | metal
+runner = "auto"                          # auto | builtin | llama.cpp (see README)
+threads = 0                              # built-in engine CPU threads (0 = physical cores)
+backend = "auto"                         # llama.cpp build: auto | cpu | cuda | vulkan | metal
 # llama_server = "/opt/llama.cpp/llama-server"  # use an existing binary instead
 # models_dir = "~/llm-models"
 # ca_bundle = "/etc/ssl/corp-root.pem"   # TLS-inspecting corporate proxy

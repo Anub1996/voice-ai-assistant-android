@@ -184,8 +184,8 @@ tr.nofit td { color: var(--muted); }
     <!-- MODELS -->
     <section id="models">
       <h1>Models</h1>
-      <p class="sub">Download models from Hugging Face and run them right here. Nothing else to install: llmo fetches the
-        llama.cpp engine for your hardware automatically.</p>
+      <p class="sub">Download models from Hugging Face and run them right here. Nothing else to install: llmo has its own
+        engine built in, made for low-spec PCs (llama.cpp is optional, for GPUs).</p>
       <div class="stack">
         <div class="card" id="engine-card"><span class="muted">Checking engine…</span></div>
         <div class="card" id="jobs-card" hidden>
@@ -556,9 +556,9 @@ async function loadPlanner() {
     $("#hw-bw").value = Math.round(hw.cpu_bandwidth_gbs); $("#hw-unified").value = hw.unified_memory ? "1" : "0";
     if (hw.gpu) { $("#hw-vram").value = hw.gpu.vram_gb; $("#hw-gbw").value = hw.gpu.bandwidth_gbs; }
     $("#hw-src").textContent = "auto-detected · bandwidth " + hw.bandwidth_source;
-    $("#hw-src").className = "chip " + (hw.bandwidth_source === "detected" ? "ok" : "warn");
+    $("#hw-src").className = "chip " + (hw.bandwidth_source === "assumed" ? "warn" : "ok");
     $("#hw-cpu").textContent = `${hw.cpu_name} · ${hw.logical_cores} threads · ${hw.gpu ? hw.gpu.name : "no GPU detected"} · ${hw.ram_available_gb} GiB RAM free now. ` +
-      (hw.bandwidth_source === "assumed" ? "Memory bandwidth can't be measured automatically here; pick your memory type for a better estimate." : "");
+      (hw.bandwidth_source === "assumed" ? "Memory bandwidth couldn't be measured; pick your memory type for a better estimate." : hw.bandwidth_source === "measured" ? `Memory bandwidth measured on this PC: ${hw.cpu_bandwidth_gbs} GB/s.` : "");
     const sel = $("#pl-model"); sel.replaceChildren();
     for (const m of presets) sel.append(el("option", { value: m.id, text: m.name }));
     sel.append(el("option", { value: "__custom", text: "Custom model…" }));
@@ -659,6 +659,13 @@ function speedChip(est) {
   return el("span", { class: "chip " + cls, title: est.basis === "exact" ? "From the model file's header" : "Estimated from file size and name",
     text: `~${est.est_tps >= 10 ? est.est_tps.toFixed(0) : est.est_tps.toFixed(1)} tok/s` + (est.gpu_layers ? ` · ${est.gpu_layers} GPU layers` : "") });
 }
+const RUNNER = { builtin: "built-in engine", llama_cpp: "llama.cpp" };
+function runnerChip(r) {
+  return el("span", { class: "chip" + (r === "builtin" ? " ok" : ""), title: r === "builtin" ? "Runs on llmo's own Rust engine: nothing else to download" : "Runs on llama.cpp (downloaded automatically)", text: RUNNER[r] || r });
+}
+function ramChip(est) {
+  return est.fits ? el("span", { class: "chip", text: `needs ~${est.ram_gib.toFixed(1)} GB RAM` + (est.ctx && est.ctx < 4096 ? ` · ${est.ctx}-token context` : "") }) : null;
+}
 
 async function startDownload(body, btn) {
   if (btn) { btn.disabled = true; btn.textContent = "Starting…"; }
@@ -671,24 +678,32 @@ async function loadEngine() {
   const card = $("#engine-card");
   try {
     const d = await api("/llmo/engine");
-    const e = d.engine, inst = e.installed;
-    const backendSel = el("select", { "aria-label": "Engine backend" },
-      ...["auto", "cpu", "cuda", "vulkan", "metal"].map((b) => el("option", { value: b, text: b === "auto" ? `Auto (${e.recommended_backend})` : b.toUpperCase() })));
-    const install = el("button", { class: "btn " + (inst ? "ghost sm" : "sm"), text: inst ? "Reinstall / update" : "Install now",
+    const e = d.engine, inst = e.installed, b = d.builtin, hw = d.hardware;
+    const backendSel = el("select", { "aria-label": "llama.cpp build" },
+      ...["auto", "cpu", "cuda", "vulkan", "metal"].map((x) => el("option", { value: x, text: x === "auto" ? `Auto (${e.recommended_backend})` : x.toUpperCase() })));
+    const install = el("button", { class: "btn ghost sm", text: inst ? "Reinstall / update llama.cpp" : "Install llama.cpp (optional)",
       onclick: async () => { install.disabled = true; try { await api("/llmo/engine/install", { json: { backend: backendSel.value } }); } catch (err) { alert(err.message); } loadJobs(); } });
     if (!e.downloads_enabled) install.disabled = true;
-    const hw = d.hardware;
+    const gpu = hw.gpu ? `${hw.gpu.name} ${hw.gpu.vram_gb} GB` : "no dedicated GPU";
+    const llamaNote = inst
+      ? `llama.cpp ${inst.version} (${inst.backend.toUpperCase()}) is installed${hw.gpu || hw.unified_memory ? " and is used for this PC's GPU" : ""}.`
+      : (hw.gpu || hw.unified_memory)
+        ? "This PC has a GPU: installing llama.cpp (15–200 MB) makes models run on it, much faster."
+        : "Not needed on this PC. llama.cpp is only downloaded for model types the built-in engine doesn't support yet.";
     card.replaceChildren(
       el("div", { class: "section-title" },
-        el("strong", { text: "Engine" }),
-        inst ? el("span", { class: "chip ok", text: `llama.cpp ${inst.version} · ${inst.backend.toUpperCase()}${inst.source !== "managed" ? " · " + inst.source : ""}` })
-             : el("span", { class: "chip warn", text: "not installed yet" })),
-      el("div", { class: "explain", text: inst
-        ? `Using ${inst.server_path}`
-        : "It downloads automatically (about 15–200 MB, depending on GPU support) the first time you run a model, or install it now. Official build from github.com/ggml-org/llama.cpp, verified by SHA-256." }),
-      el("div", { class: "explain", text: `This PC: ${Math.round(hw.ram_gb)} GB RAM · ${hw.gpu ? hw.gpu.name + " " + hw.gpu.vram_gb + " GB" : "no dedicated GPU"} · models run with ${d.ctx}-token context.` }),
-      e.downloads_enabled ? el("div", { class: "row", style: "margin-top:10px;align-items:center" }, backendSel, install)
-                          : el("div", { class: "explain", text: "Downloads are disabled by the administrator." }));
+        el("strong", { text: "Engines" }),
+        el("span", { class: "chip ok", text: "built-in engine ready · nothing to install" })),
+      el("div", { class: "list-row" },
+        el("div", { class: "grow" },
+          el("div", {}, el("strong", { text: "llmo built-in engine (Rust)" }), " ", el("span", { class: "chip ok", text: "v" + b.version })),
+          el("div", { class: "explain", text: `Part of llmo itself: runs quantized GGUF models on the CPU, made for low-spec PCs. Families: Llama, SmolLM2, Mistral, Qwen 2/2.5/3, Gemma 3, Phi-3.` }))),
+      el("div", { class: "list-row" },
+        el("div", { class: "grow" },
+          el("div", {}, el("strong", { text: "llama.cpp" }), " ", inst ? el("span", { class: "chip ok", text: `${inst.version} · ${inst.backend.toUpperCase()}${inst.source !== "managed" ? " · " + inst.source : ""}` }) : el("span", { class: "chip", text: "not installed" })),
+          el("div", { class: "explain", text: llamaNote })),
+        e.downloads_enabled ? el("div", { class: "actions" }, backendSel, install) : null),
+      el("div", { class: "explain", style: "margin-top:8px", text: `This PC: ${Math.round(hw.ram_gb)} GB RAM · ${hw.physical_cores} CPU cores · ${gpu} · engine choice: ${d.runner}.` }));
   } catch (err) { card.replaceChildren(el("span", { class: "err", text: "Engine status unavailable: " + err.message })); }
 }
 
@@ -737,14 +752,14 @@ async function loadLocal() {
       const st = m.status.state, running = st === "running", starting = st === "starting";
       const actions = el("div", { class: "actions" });
       if (running || starting) actions.append(el("button", { class: "btn ghost sm", text: "Stop", onclick: async () => { await api(`/llmo/local/${m.id}/stop`, { method: "POST" }); loadLocal(); } }));
-      else actions.append(el("button", { class: "btn ghost sm", text: d.engine_installed ? "Start" : "Start (installs engine)", onclick: async (e) => { e.target.disabled = true; try { await api(`/llmo/local/${m.id}/run`, { method: "POST" }); } catch (err) { alert(err.message); } loadJobs(); } }));
+      else actions.append(el("button", { class: "btn ghost sm", text: m.runner === "llama_cpp" && !d.engine_installed ? "Start (installs llama.cpp)" : "Start", onclick: async (e) => { e.target.disabled = true; try { await api(`/llmo/local/${m.id}/run`, { method: "POST" }); } catch (err) { alert(err.message); } loadJobs(); } }));
       actions.append(el("button", { class: "btn sm", text: "Chat", onclick: () => chatWith(m.id) }));
       actions.append(el("button", { class: "btn danger sm", text: "Delete", onclick: async () => { if (!confirm(`Delete ${m.name} (${fmtGB(m.size)}) from disk?`)) return; await api("/llmo/local/" + m.id, { method: "DELETE" }); loadLocal(); loadModels(); } }));
       const cls = running ? "ok" : starting ? "warn" : st === "failed" ? "bad" : "";
       list.append(el("div", { class: "list-row" },
         el("div", { class: "grow" },
           el("div", {}, el("strong", { text: m.name }), "  ", el("span", { class: "chip " + cls, text: starting ? "loading…" : st })),
-          el("div", { class: "meta" }, el("span", { class: "chip", text: fmtGB(m.size) }), speedChip(m.estimate),
+          el("div", { class: "meta" }, el("span", { class: "chip", text: fmtGB(m.size) }), speedChip(m.estimate), runnerChip(m.runner), ramChip(m.estimate),
             m.info && m.info.expert_count > 1 ? el("span", { class: "chip", text: "mixture of experts" }) : null,
             el("span", { class: "chip mono", text: m.repo })),
           m.status.detail ? el("div", { class: "err", text: m.status.detail }) : null),
@@ -761,13 +776,16 @@ async function loadRecommended() {
     const d = await api("/llmo/hub/recommended");
     recLoaded = true;
     grid.replaceChildren();
-    const sorted = d.models.sort((a, b) => (b.meets_target - a.meets_target) || (b.est_tps - a.est_tps));
+    // Best model that runs at a usable speed first (bigger = smarter).
+    const sorted = d.models.sort((a, b) => (b.meets_target - a.meets_target) || (b.params_b - a.params_b));
     for (const r of sorted) {
       grid.append(el("div", { class: "card rec-card" },
         el("strong", { text: r.name }),
         el("div", { class: "meta" },
           el("span", { class: "chip", text: `${r.quant} · ${r.size_gib.toFixed(1)} GB` }),
-          el("span", { class: "chip " + (r.meets_target ? "ok" : r.est_tps >= 5 ? "" : "warn"), text: `~${r.est_tps.toFixed(r.est_tps >= 10 ? 0 : 1)} tok/s` })),
+          el("span", { class: "chip " + (r.meets_target ? "ok" : r.est_tps >= 5 ? "" : "warn"), text: `~${r.est_tps.toFixed(r.est_tps >= 10 ? 0 : 1)} tok/s` }),
+          runnerChip(r.runner),
+          el("span", { class: "chip", text: `~${r.ram_gib.toFixed(1)} GB RAM` })),
         el("div", { class: "explain mono", text: r.repo }),
         el("button", { class: "btn sm", text: "Download & run", onclick: (e) => startDownload({ repo: r.repo, quant: r.quant, run: true }, e.target) })));
     }
@@ -804,7 +822,7 @@ async function showRepo(id) {
         el("div", { class: "grow" },
           el("div", {}, el("strong", { text: c.quant || c.id }), isRec ? el("span", { class: "chip ok", style: "margin-left:8px", text: "recommended" }) : null,
             c.downloaded ? el("span", { class: "chip ok", style: "margin-left:8px", text: "downloaded" }) : null),
-          el("div", { class: "meta" }, el("span", { class: "chip", text: fmtGB(c.size) + (c.files.length > 1 ? ` · ${c.files.length} parts` : "") }), speedChip(c.estimate)),
+          el("div", { class: "meta" }, el("span", { class: "chip", text: fmtGB(c.size) + (c.files.length > 1 ? ` · ${c.files.length} parts` : "") }), speedChip(c.estimate), runnerChip(c.runner), ramChip(c.estimate)),
           el("div", { class: "explain mono", text: c.id })),
         btn);
     });

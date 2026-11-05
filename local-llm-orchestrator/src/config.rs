@@ -51,7 +51,16 @@ pub struct EngineConfig {
     /// `latest` or a release tag such as `b6550` (pin for reproducibility).
     #[serde(default = "default_latest")]
     pub llama_cpp_version: String,
-    /// `auto`, `cpu`, `cuda`, `vulkan` or `metal`.
+    /// Which engine runs downloaded models: `auto` (the built-in Rust engine
+    /// for supported models; llama.cpp only when a GPU is present and
+    /// llama.cpp is installed, or the model needs it), `builtin`, or
+    /// `llama.cpp`.
+    #[serde(default = "default_auto")]
+    pub runner: String,
+    /// CPU threads for the built-in engine (0 = physical cores).
+    #[serde(default)]
+    pub threads: usize,
+    /// llama.cpp build: `auto`, `cpu`, `cuda`, `vulkan` or `metal`.
     #[serde(default = "default_auto")]
     pub backend: String,
     /// Use this existing `llama-server` binary instead of downloading one.
@@ -85,6 +94,8 @@ impl Default for EngineConfig {
             github_api: default_github_api(),
             llama_cpp_repo: default_llama_repo(),
             llama_cpp_version: default_latest(),
+            runner: default_auto(),
+            threads: 0,
             backend: default_auto(),
             llama_server: None,
             models_dir: None,
@@ -499,6 +510,10 @@ impl Config {
             "engine.backend must be auto, cpu, cuda, vulkan or metal"
         );
         anyhow::ensure!(self.engine.ctx >= 512, "engine.ctx must be >= 512");
+        anyhow::ensure!(
+            ["auto", "builtin", "llama.cpp"].contains(&self.engine.runner.as_str()),
+            "engine.runner must be auto, builtin or llama.cpp"
+        );
         if let EmbedderConfig::Hash { dim } = &self.memory.embedder {
             anyhow::ensure!(*dim >= 16, "hash embedder dim must be >= 16");
         }

@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.4.0
+
+### Built-in Rust inference engine
+- A llama.cpp alternative compiled into llmo (the binary is ~20 MB in
+  total) that runs quantized GGUF models on the CPU, made for low-spec PCs.
+  Families: Llama/SmolLM2/TinyLlama/Llama 3.x, Mistral, Qwen 2/2.5/3,
+  Gemma 3, Phi-3.
+- Pure-Rust tokenizer read from GGUF: byte-level BPE with each model's
+  pre-tokenizer, and SentencePiece with byte fallback.
+- Chat templates rendered from the model's own Jinja template, with
+  fallbacks.
+- Token embeddings stay quantized, cutting peak RAM by up to ~500 MB per
+  model. Context shrinks automatically to fit small RAM.
+- Prefix KV-cache reuse across chat turns: only the new message is
+  computed.
+- OpenAI-compatible model server (`llmo run-model`), with streaming, usage
+  and timings. Each model runs in its own process.
+- Fixed two upstream Gemma 3 attention-mask bugs: one for the cached
+  prefix, and one for the sliding window in token-by-token decoding.
+- Verified against an independent numpy reference. Benchmark:
+  `examples/lite_bench.rs`.
+
+### Other
+- `engine.runner` (`auto` | `builtin` | `llama.cpp`) and `engine.threads`.
+  `auto` never downloads llama.cpp on CPU-only PCs.
+- Memory bandwidth is now measured at start-up, so every speed estimate
+  uses the real figure.
+- New small-model presets for low-spec PCs: SmolLM2 135M/360M, Gemma 3
+  270M, Qwen2.5 0.5B/1.5B, Qwen3 0.6B, Llama 3.2 1B.
+- The UI shows which engine runs each model and how much RAM it needs.
+
+
 ## 0.3.0
 
 ### Built-in model runner: run Hugging Face models with nothing else installed
