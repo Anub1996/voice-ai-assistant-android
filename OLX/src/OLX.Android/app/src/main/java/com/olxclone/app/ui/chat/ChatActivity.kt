@@ -48,7 +48,9 @@ class ChatActivity : AppCompatActivity() {
                     val resp = withContext(Dispatchers.IO) { api.getMessages(conversationId) }
                     if (resp.isSuccessful) {
                         val msgs = resp.body() ?: emptyList()
-                        rvMessages.adapter = MessageAdapter(msgs, myUserId)
+                        val adapter = MessageAdapter(myUserId)
+                        adapter.updateData(msgs)
+                        rvMessages.adapter = adapter
                         if (msgs.isNotEmpty()) rvMessages.scrollToPosition(msgs.size - 1)
                     }
                 } catch (e: Exception) {

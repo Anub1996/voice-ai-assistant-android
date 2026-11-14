@@ -40,13 +40,15 @@ class NotificationsActivity : AppCompatActivity() {
                             tvEmpty.visibility = View.VISIBLE
                         } else {
                             tvEmpty.visibility = View.GONE
-                            rvNotifications.adapter = NotificationAdapter(items) { notif ->
+                            val adapter = NotificationAdapter { notif ->
                                 lifecycleScope.launch {
                                     try {
                                         withContext(Dispatchers.IO) { api.markRead(notif.id) }
                                     } catch (_: Exception) {}
                                 }
                             }
+                            adapter.updateData(items)
+                            rvNotifications.adapter = adapter
                         }
                     }
                 } catch (e: Exception) {

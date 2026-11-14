@@ -37,11 +37,13 @@ class ChatListFragment : Fragment() {
                     if (items.isEmpty()) {
                         tvEmpty.visibility = View.VISIBLE
                     } else {
-                        rvConversations.adapter = ConversationAdapter(items) { convo ->
+                        val adapter = ConversationAdapter { convo ->
                             startActivity(Intent(requireContext(), ChatActivity::class.java)
                                 .putExtra("conversation_id", convo.id)
                                 .putExtra("title", "${convo.otherUserName} - ${convo.listingTitle}"))
                         }
+                        adapter.updateData(items)
+                        rvConversations.adapter = adapter
                     }
                 }
             } catch (e: Exception) {

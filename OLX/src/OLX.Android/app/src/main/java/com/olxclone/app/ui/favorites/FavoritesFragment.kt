@@ -37,19 +37,20 @@ class FavoritesFragment : Fragment() {
                     if (items.isEmpty()) {
                         tvEmpty.visibility = View.VISIBLE
                     } else {
-                        rvFavorites.adapter = FavoriteAdapter(items.toMutableList(),
+                        val adapter = FavoriteAdapter(
                             onClick = { fav ->
                                 startActivity(Intent(requireContext(), ListingDetailActivity::class.java)
                                     .putExtra("listing_id", fav.listingId))
                             },
-                            onRemove = { fav, position ->
+                            onRemove = { fav ->
                                 lifecycleScope.launch {
                                     try {
                                         withContext(Dispatchers.IO) { api.removeFavorite(fav.listingId) }
-                                        (rvFavorites.adapter as? FavoriteAdapter)?.removeAt(position)
                                     } catch (_: Exception) {}
                                 }
                             })
+                        adapter.updateData(items)
+                        rvFavorites.adapter = adapter
                     }
                 }
             } catch (e: Exception) {

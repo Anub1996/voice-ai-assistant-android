@@ -40,10 +40,12 @@ class MyAdsActivity : AppCompatActivity() {
                     if (items.isEmpty()) {
                         tvEmpty.visibility = View.VISIBLE
                     } else {
-                        rvListings.adapter = ListingAdapter(items) { listing ->
+                        val adapter = ListingAdapter({ listing ->
                             startActivity(Intent(this@MyAdsActivity, ListingDetailActivity::class.java)
                                 .putExtra("listing_id", listing.id))
-                        }
+                        })
+                        adapter.updateData(items)
+                        rvListings.adapter = adapter
                     }
                 }
             } catch (e: Exception) {

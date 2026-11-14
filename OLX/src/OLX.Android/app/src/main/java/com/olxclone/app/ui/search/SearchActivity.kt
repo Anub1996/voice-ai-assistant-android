@@ -57,10 +57,12 @@ class SearchActivity : AppCompatActivity() {
                     if (resp.isSuccessful && resp.body() != null) {
                         val result = resp.body()!!
                         tvResultCount.text = "${result.total} results"
-                        rvResults.adapter = ListingAdapter(result.data) { listing ->
+                        val adapter = ListingAdapter({ listing ->
                             startActivity(Intent(this@SearchActivity, ListingDetailActivity::class.java)
                                 .putExtra("listing_id", listing.id))
-                        }
+                        })
+                        adapter.updateData(result.data)
+                        rvResults.adapter = adapter
                     }
                 } catch (e: Exception) {
                     Toast.makeText(this@SearchActivity, "Error: ${e.message}", Toast.LENGTH_SHORT).show()

@@ -56,20 +56,24 @@ class HomeFragment : Fragment() {
                     val catResp = withContext(Dispatchers.IO) { api.getCategories() }
                     if (catResp.isSuccessful) {
                         val cats = catResp.body() ?: emptyList()
-                        rvCategories.adapter = CategoryAdapter(cats) { cat ->
+                        val catAdapter = CategoryAdapter { cat ->
                             startActivity(Intent(requireContext(), SearchActivity::class.java)
                                 .putExtra("category_id", cat.id)
                                 .putExtra("category_name", cat.name))
                         }
+                        catAdapter.updateData(cats)
+                        rvCategories.adapter = catAdapter
                     }
 
                     val listResp = withContext(Dispatchers.IO) { api.getListings(pageSize = 20) }
                     if (listResp.isSuccessful) {
                         val items = listResp.body()?.data ?: emptyList()
-                        rvListings.adapter = ListingAdapter(items) { listing ->
+                        val adapter = ListingAdapter({ listing ->
                             startActivity(Intent(requireContext(), ListingDetailActivity::class.java)
                                 .putExtra("listing_id", listing.id))
-                        }
+                        })
+                        adapter.updateData(items)
+                        rvListings.adapter = adapter
                     }
                 } catch (e: Exception) {
                     Toast.makeText(context, "Error loading: ${e.message}", Toast.LENGTH_SHORT).show()
