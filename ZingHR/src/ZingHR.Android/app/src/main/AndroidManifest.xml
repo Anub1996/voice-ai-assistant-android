@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <application
+        android:name=".ZingHRApp"
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.ZingHR"
+        android:usesCleartextTraffic="true"
+        tools:targetApi="31">
+
+        <activity
+            android:name=".ui.auth.LoginActivity"
+            android:exported="true"
+            android:theme="@style/Theme.ZingHR.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".ui.dashboard.MainActivity"
+            android:theme="@style/Theme.ZingHR.NoActionBar" />
+
+        <activity
+            android:name=".ui.attendance.AttendanceActivity"
+            android:theme="@style/Theme.ZingHR.NoActionBar" />
+
+        <activity
+            android:name=".ui.leave.LeaveActivity"
+            android:theme="@style/Theme.ZingHR.NoActionBar" />
+
+        <activity
+            android:name=".ui.leave.ApplyLeaveActivity"
+            android:theme="@style/Theme.ZingHR.NoActionBar" />
+
+        <activity
+            android:name=".ui.payslip.PayslipActivity"
+            android:theme="@style/Theme.ZingHR.NoActionBar" />
+
+        <activity
+            android:name=".ui.payslip.PayslipDetailActivity"
+            android:theme="@style/Theme.ZingHR.NoActionBar" />
+
+        <activity
+            android:name=".ui.expense.ExpenseActivity"
+            android:theme="@style/Theme.ZingHR.NoActionBar" />
+
+        <activity
+            android:name=".ui.expense.SubmitExpenseActivity"
+            android:theme="@style/Theme.ZingHR.NoActionBar" />
+
+        <activity
+            android:name=".ui.directory.DirectoryActivity"
+            android:theme="@style/Theme.ZingHR.NoActionBar" />
+
+        <activity
+            android:name=".ui.helpdesk.HelpdeskActivity"
+            android:theme="@style/Theme.ZingHR.NoActionBar" />
+
+        <activity
+            android:name=".ui.helpdesk.CreateTicketActivity"
+            android:theme="@style/Theme.ZingHR.NoActionBar" />
+
+        <activity
+            android:name=".ui.profile.ProfileActivity"
+            android:theme="@style/Theme.ZingHR.NoActionBar" />
+
+        <activity
+            android:name=".ui.notifications.NotificationsActivity"
+            android:theme="@style/Theme.ZingHR.NoActionBar" />
+
+    </application>
+</manifest>
