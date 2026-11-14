@@ -1,0 +1,11 @@
+pub mod login;
+pub mod register;
+pub mod home;
+pub mod search;
+pub mod listing_detail;
+pub mod post_listing;
+pub mod chat;
+pub mod favorites;
+pub mod notifications;
+pub mod profile;
+pub mod my_ads;
