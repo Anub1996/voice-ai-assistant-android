@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:background="@color/background">
+
+    <!-- Search Bar -->
+    <LinearLayout android:layout_width="match_parent" android:layout_height="56dp" android:background="@color/primary" android:gravity="center_vertical" android:paddingHorizontal="16dp">
+        <EditText android:id="@+id/etSearch" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="1"
+            android:background="@color/white" android:hint="@string/search_hint" android:paddingHorizontal="16dp"
+            android:textSize="14sp" android:inputType="text" android:imeOptions="actionSearch" android:singleLine="true"/>
+        <ImageButton android:id="@+id/btnNotifications" android:layout_width="40dp" android:layout_height="40dp"
+            android:src="@android:drawable/ic_popup_reminder" android:background="?attr/selectableItemBackgroundBorderless"
+            android:layout_marginStart="8dp" android:contentDescription="Notifications"/>
+    </LinearLayout>
+
+    <!-- Categories Row -->
+    <androidx.recyclerview.widget.RecyclerView android:id="@+id/rvCategories" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:background="@color/white" android:padding="8dp"/>
+
+    <androidx.swiperefreshlayout.widget.SwipeRefreshLayout android:id="@+id/swipeRefresh" android:layout_width="match_parent" android:layout_height="match_parent">
+        <androidx.recyclerview.widget.RecyclerView android:id="@+id/rvListings" android:layout_width="match_parent" android:layout_height="match_parent" android:padding="8dp" android:clipToPadding="false"/>
+    </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
+</LinearLayout>

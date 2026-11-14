@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#002F34</color>
+    <color name="primary_dark">#001A1D</color>
+    <color name="accent">#23E5DB</color>
+    <color name="sell_button">#FFCE32</color>
+    <color name="white">#FFFFFF</color>
+    <color name="black">#000000</color>
+    <color name="text_primary">#002F34</color>
+    <color name="text_secondary">#7F9799</color>
+    <color name="background">#F2F4F5</color>
+    <color name="card_bg">#FFFFFF</color>
+    <color name="divider">#E0E0E0</color>
+    <color name="featured_badge">#FFD700</color>
+    <color name="negotiable_tag">#4CAF50</color>
+    <color name="red">#D32F2F</color>
+    <color name="chat_sent">#DCF8C6</color>
+    <color name="chat_received">#FFFFFF</color>
+    <color name="unread_badge">#FF5722</color>
+    <color name="verified">#2196F3</color>
+</resources>

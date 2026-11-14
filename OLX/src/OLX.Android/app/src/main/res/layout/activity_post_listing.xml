@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:background="@color/white">
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="56dp" android:background="@color/primary" android:gravity="center_vertical" android:paddingHorizontal="16dp">
+        <ImageButton android:id="@+id/btnBack" android:layout_width="32dp" android:layout_height="32dp" android:src="@android:drawable/ic_menu_revert" android:background="?attr/selectableItemBackgroundBorderless" android:contentDescription="Back"/>
+        <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="@string/post_ad" android:textColor="@color/white" android:textSize="18sp" android:layout_marginStart="16dp"/>
+    </LinearLayout>
+
+    <ScrollView android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="16dp">
+
+        <com.google.android.material.textfield.TextInputLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="12dp" style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+            <com.google.android.material.textfield.TextInputEditText android:id="@+id/etTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="@string/title"/>
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="12dp" style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+            <com.google.android.material.textfield.TextInputEditText android:id="@+id/etDescription" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="@string/description" android:minLines="4" android:gravity="top" android:inputType="textMultiLine"/>
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="12dp">
+            <com.google.android.material.textfield.TextInputLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="2" style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+                <com.google.android.material.textfield.TextInputEditText android:id="@+id/etPrice" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="@string/price" android:inputType="numberDecimal"/>
+            </com.google.android.material.textfield.TextInputLayout>
+            <CheckBox android:id="@+id/cbNegotiable" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/negotiable" android:layout_gravity="center_vertical" android:layout_marginStart="8dp"/>
+        </LinearLayout>
+
+        <Spinner android:id="@+id/spCategory" android:layout_width="match_parent" android:layout_height="56dp" android:background="@android:drawable/btn_dropdown" android:layout_marginBottom="12dp"/>
+
+        <Spinner android:id="@+id/spCondition" android:layout_width="match_parent" android:layout_height="56dp" android:background="@android:drawable/btn_dropdown" android:layout_marginBottom="12dp"/>
+
+        <com.google.android.material.textfield.TextInputLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="12dp" style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+            <com.google.android.material.textfield.TextInputEditText android:id="@+id/etCity" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="@string/city"/>
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="24dp" style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+            <com.google.android.material.textfield.TextInputEditText android:id="@+id/etState" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="@string/state"/>
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnPost" android:layout_width="match_parent" android:layout_height="56dp" android:text="Post Ad" android:backgroundTint="@color/sell_button" android:textColor="@color/black" android:textSize="16sp"/>
+
+        <ProgressBar android:id="@+id/progressBar" android:layout_width="wrap_content" android:layout_height="wrap_content" android:visibility="gone" android:layout_gravity="center" android:layout_marginTop="16dp"/>
+    </LinearLayout>
+    </ScrollView>
+</LinearLayout>

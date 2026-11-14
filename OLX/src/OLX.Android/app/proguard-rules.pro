@@ -1,0 +1,7 @@
+-keepattributes Signature
+-keepattributes *Annotation*
+-keep class com.olxclone.app.api.** { *; }
+-keep class retrofit2.** { *; }
+-keepclassmembers class * { @com.google.gson.annotations.SerializedName <fields>; }
+-dontwarn okhttp3.**
+-dontwarn retrofit2.**
