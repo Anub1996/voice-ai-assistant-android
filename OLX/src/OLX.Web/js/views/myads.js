@@ -39,7 +39,7 @@ const myadsView = {
           <div class="listing-card-img">
             <span class="placeholder-icon">📷</span>
             <span style="position:absolute;top:8px;left:8px;padding:4px 10px;border-radius:9999px;font-size:11px;font-weight:700;
-              background:${statusColors[item.status] || 'var(--text-tertiary)'};color:var(--bg-dark);">
+              background:${statusColors[item.status] || 'var(--text-tertiary)'};color:#fff;">
               ${app.escHtml(item.status.charAt(0).toUpperCase() + item.status.slice(1))}
             </span>
             ${item.isFeatured ? '<span class="featured-tag">⭐ Featured</span>' : ''}
