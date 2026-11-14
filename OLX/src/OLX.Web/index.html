@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OLX Marketplace</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Animated background -->
+  <div class="bg-mesh">
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    <div class="blob blob-3"></div>
+    <div class="blob blob-4"></div>
+  </div>
+
+  <!-- Toast container -->
+  <div id="toast-container"></div>
+
+  <!-- Main app shell -->
+  <div id="app">
+    <!-- Top navigation (hidden on auth screens) -->
+    <nav id="top-nav" class="glass-nav hidden">
+      <div class="nav-inner">
+        <div class="nav-left">
+          <div class="logo" onclick="app.navigate('home')">
+            <span class="logo-icon">O</span><span class="logo-text">LX</span>
+          </div>
+          <div class="nav-search glass-input-wrap" id="nav-search-wrap">
+            <svg class="icon-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" fill="none"/><line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            <input type="text" id="nav-search-input" placeholder="Search for anything..." class="glass-input">
+          </div>
+        </div>
+        <div class="nav-right">
+          <button class="nav-icon-btn" onclick="app.navigate('chat')" title="Messages">
+            <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
+            <span class="badge hidden" id="chat-badge">0</span>
+          </button>
+          <button class="nav-icon-btn" onclick="app.navigate('notifications')" title="Notifications">
+            <svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M13.73 21a2 2 0 0 1-3.46 0" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
+            <span class="badge hidden" id="notif-badge">0</span>
+          </button>
+          <button class="nav-icon-btn" onclick="app.navigate('favorites')" title="Favorites">
+            <svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
+          </button>
+          <button class="btn-sell glass-btn-accent" onclick="app.navigate('post')">
+            <svg viewBox="0 0 24 24" width="18" height="18"><line x1="12" y1="5" x2="12" y2="19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="5" y1="12" x2="19" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            SELL
+          </button>
+          <div class="nav-avatar" onclick="app.navigate('profile')" id="nav-avatar">
+            <span id="nav-avatar-letter">U</span>
+          </div>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Page content -->
+    <main id="page-content"></main>
+
+    <!-- Bottom navigation (mobile) -->
+    <nav id="bottom-nav" class="glass-bottom-nav hidden">
+      <button class="bnav-item active" data-route="home" onclick="app.navigate('home')">
+        <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" stroke="currentColor" stroke-width="1.5" fill="none"/><polyline points="9 22 9 12 15 12 15 22" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
+        <span>Home</span>
+      </button>
+      <button class="bnav-item" data-route="chat" onclick="app.navigate('chat')">
+        <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
+        <span>Chat</span>
+      </button>
+      <button class="bnav-item bnav-sell" data-route="post" onclick="app.navigate('post')">
+        <div class="bnav-sell-circle">
+          <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><line x1="5" y1="12" x2="19" y2="12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
+        </div>
+        <span>Sell</span>
+      </button>
+      <button class="bnav-item" data-route="favorites" onclick="app.navigate('favorites')">
+        <svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
+        <span>Wishlist</span>
+      </button>
+      <button class="bnav-item" data-route="profile" onclick="app.navigate('profile')">
+        <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" stroke="currentColor" stroke-width="1.5" fill="none"/><circle cx="12" cy="7" r="4" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
+        <span>Account</span>
+      </button>
+    </nav>
+  </div>
+
+  <script src="js/api.js"></script>
+  <script src="js/views/login.js"></script>
+  <script src="js/views/register.js"></script>
+  <script src="js/views/home.js"></script>
+  <script src="js/views/search.js"></script>
+  <script src="js/views/listing.js"></script>
+  <script src="js/views/post.js"></script>
+  <script src="js/views/chat.js"></script>
+  <script src="js/views/favorites.js"></script>
+  <script src="js/views/notifications.js"></script>
+  <script src="js/views/profile.js"></script>
+  <script src="js/views/myads.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
