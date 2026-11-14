@@ -143,12 +143,12 @@ impl ApiClient {
 
     // Profile
     pub fn get_profile(&self) -> Result<UserProfile, String> {
-        self.client.get(self.url("/api/users/profile")).headers(self.headers()).send()
+        self.client.get(self.url("/api/users/me")).headers(self.headers()).send()
             .map_err(|e| e.to_string())?.json().map_err(|e| e.to_string())
     }
 
     pub fn update_profile(&self, req: &UpdateProfileRequest) -> Result<MessageResponse, String> {
-        self.client.put(self.url("/api/users/profile")).headers(self.headers()).json(req).send()
+        self.client.put(self.url("/api/users/me")).headers(self.headers()).json(req).send()
             .map_err(|e| e.to_string())?.json().map_err(|e| e.to_string())
     }
 

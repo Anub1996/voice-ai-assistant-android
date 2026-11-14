@@ -12,11 +12,14 @@ pub struct LoginResponse { pub token: String, #[serde(rename = "userId")] pub us
 #[derive(Deserialize, Clone, Default)]
 pub struct UserProfile {
     pub id: i32, pub username: String, #[serde(rename = "fullName")] pub full_name: String,
-    pub email: String, pub phone: String, pub bio: Option<String>,
+    pub email: String, pub phone: String,
+    #[serde(rename = "profilePhotoUrl")] pub profile_photo_url: Option<String>,
+    pub bio: Option<String>,
     pub city: Option<String>, pub state: Option<String>,
     #[serde(rename = "joinedAt")] pub joined_at: String,
     #[serde(rename = "isVerified")] pub is_verified: bool,
     #[serde(rename = "listingsCount")] pub listings_count: i32,
+    #[serde(rename = "avgResponseTime")] pub avg_response_time: f64,
 }
 #[derive(Serialize)]
 pub struct UpdateProfileRequest { #[serde(rename = "fullName")] pub full_name: Option<String>, pub phone: Option<String>, pub bio: Option<String>, pub city: Option<String>, pub state: Option<String> }
